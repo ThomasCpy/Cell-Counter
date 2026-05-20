@@ -31,7 +31,7 @@ def load_as_float(image_path):
         
     return img.astype(np.float32) / scale_factor
 
-def segment_nuclei(img, min_nucleus_area=500, use_watershed=False, method='triangle'):
+def segment_nuclei(img, min_nucleus_area=500, use_watershed=True, method='triangle'):
     """Segment Hoechst channel to identify nuclei markers."""
     if img is None or np.max(img) == 0: 
         return None, 0
