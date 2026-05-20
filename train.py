@@ -20,7 +20,7 @@ def train_pipeline():
     model = UNet(n_channels=1, n_classes=1).to(device)
 
     # Setup DataLoaders
-    data_dir = "data"
+    data_dir = "C:/Users/lab/OneDrive - Vandria/Bureau/Cell counter training dataset/Plate 1"
     os.makedirs(data_dir, exist_ok=True)
 
     # Load and split dataset
@@ -43,11 +43,12 @@ def train_pipeline():
     val_loader = DataLoader(val_dataset, batch_size=4, shuffle=False, num_workers=0)
 
     # Setup loss and optimizer
-    criterion = nn.BCEWithLogitsLoss()
+    pos_weight = torch.tensor([9.0])  #ig we have mainly background
+    criterion = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
     optimizer = optim.Adam(model.parameters(), lr=1e-4)
 
     # Initialize TensorBoard writer
-    writer = SummaryWriter('runs/cell_counter_experiment')
+    writer = SummaryWriter('runs/cell_counter_experiment_pos_weight_9')
 
     # Training loop
     epochs = 50
