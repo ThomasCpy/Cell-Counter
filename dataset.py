@@ -6,8 +6,9 @@ import torch
 import numpy as np
 from torch.utils.data import Dataset
 import torchvision.transforms.functional as TF
-from skimage import io, filters, morphology, feature, segmentation
+from skimage import io, filters, morphology, feature, segmentation, exposure
 import scipy.ndimage as ndi
+import matplotlib.pyplot as plt
 
 def load_as_float(image_path):
     """Load image, scale to float, and dynamically handle hardware bit-depth."""
@@ -165,3 +166,53 @@ class CellDataset(Dataset):
                 bf_tensor = TF.adjust_brightness(bf_tensor, brightness_factor)
 
         return bf_tensor, hoechst_tensor
+
+def run_qc_segmentation(data_dir="data", qc_dir="QC", num_samples=10):
+    """Run QC on nuclear segmentation and save side-by-side comparisons."""
+    os.makedirs(qc_dir, exist_ok=True)
+    
+    # Use the same logic as CellDataset to find pairs
+    dataset = CellDataset(data_dir=data_dir, is_train=False)
+    
+    if len(dataset.pairs) == 0:
+        print(f"No image pairs found in '{data_dir}'.")
+        return
+        
+    samples = dataset.pairs[:num_samples] if num_samples else dataset.pairs
+    
+    for i, pair in enumerate(samples):
+        hoechst_path = pair['hoechst']
+        base_name = os.path.basename(hoechst_path)
+        name_no_ext, _ = os.path.splitext(base_name)
+        print(f"Processing QC for {base_name}...")
+        
+        hoechst_img = load_as_float(hoechst_path)
+        if hoechst_img is None:
+            continue
+            
+        nuclei_labels, num_cells = segment_nuclei(hoechst_img)
+        
+        # Apply CLAHE for visualization to enhance contrast without altering raw data
+        hoechst_vis = exposure.equalize_adapthist(hoechst_img, clip_limit=0.03)
+        
+        fig, ax = plt.subplots(1, 2, figsize=(12, 6))
+        
+        ax[0].imshow(hoechst_vis, cmap='gray')
+        ax[0].set_title("Hoechst (CLAHE)")
+        ax[0].axis('off')
+        
+        ax[1].imshow(hoechst_vis, cmap='gray')
+        mask = nuclei_labels > 0
+        ax[1].imshow(mask, cmap='Reds', alpha=0.3)
+        ax[1].set_title(f"Segmentation Overlay (Count: {num_cells})")
+        ax[1].axis('off')
+        
+        plt.tight_layout()
+        out_path = os.path.join(qc_dir, f"QC_{name_no_ext}.png")
+        plt.savefig(out_path, dpi=150, bbox_inches='tight')
+        plt.close(fig)
+        
+    print(f"Saved {len(samples)} QC images to {qc_dir}")
+
+if __name__ == "__main__":
+    run_qc_segmentation()
