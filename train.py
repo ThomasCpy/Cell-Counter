@@ -12,6 +12,23 @@ from tqdm import tqdm
 
 TF_ENABLE_ONEDNN_OPTS=0
 
+class BCEDiceLoss(nn.Module):
+    def __init__(self, pos_weight=None, smooth=1.0):
+        super(BCEDiceLoss, self).__init__()
+        self.bce = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+        self.smooth = smooth
+
+    def forward(self, logits, targets):
+        bce_loss = self.bce(logits, targets)
+        
+        probs = torch.sigmoid(logits)
+        probs_flat = probs.view(-1)
+        targets_flat = targets.view(-1)
+        intersection = (probs_flat * targets_flat).sum()
+        dice_loss = 1 - (2. * intersection + self.smooth) / (probs_flat.sum() + targets_flat.sum() + self.smooth)
+        
+        return bce_loss + dice_loss
+
 def train_pipeline():
     # Set device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -52,9 +69,10 @@ def train_pipeline():
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS)
 
     # Setup loss and optimizer
-    pos_weight = torch.tensor([7.0])  #ig we have mainly background
-    criterion = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+    pos_weight = torch.tensor([7.0]).to(device)  # Adjust for class imbalance (predominantly background)
+    criterion = BCEDiceLoss(pos_weight=pos_weight)
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
     # Initialize TensorBoard writer
     writer = SummaryWriter('runs/cell_counter_hmc3')
@@ -102,6 +120,10 @@ def train_pipeline():
         writer.add_scalar('Loss/Train', avg_loss, epoch)
         writer.add_scalar('Loss/Validation', avg_val_loss, epoch)
         
+        # Step the scheduler and log learning rate
+        scheduler.step(avg_val_loss)
+        writer.add_scalar('LearningRate', optimizer.param_groups[0]['lr'], epoch)
+        
         # Log sample images
         if epoch % 5 == 0 or epoch == EPOCHS - 1:
             writer.add_images('Images/Brightfield', val_bf, epoch)
@@ -115,8 +137,8 @@ def train_pipeline():
     
     # Save PyTorch state dictionary for future training
     pth_path = "Vandria_cell_counter_model_HMC3.pth"
-    # Make sure to move model back to CPU before saving to ensure compatibility 
-    # when loading on machines without a GPU.
+    # Transfer model to CPU prior to saving to guarantee compatibility
+    # across devices without GPU support.
     torch.save(model.to("cpu").state_dict(), pth_path)
     print(f"Saved PyTorch weights for future training to {pth_path}")
 
