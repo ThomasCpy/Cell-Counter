@@ -19,39 +19,44 @@ class DoubleConv(nn.Module):
         return self.double_conv(x)
 
 class UNet(nn.Module):
-    def __init__(self, n_channels=1, n_classes=1):
+    def __init__(self, n_channels=1, n_classes=1, features=(64, 128, 256, 512)):
         super(UNet, self).__init__()
-        self.inc = DoubleConv(n_channels, 64)
-        self.down1 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(64, 128))
-        self.down2 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(128, 256))
-        self.down3 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(256, 512))
+        self.downs = nn.ModuleList()
+        self.ups = nn.ModuleList()
+        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
 
-        self.up1 = nn.ConvTranspose2d(512, 256, kernel_size=2, stride=2)
-        self.conv_up1 = DoubleConv(512, 256)
-        self.up2 = nn.ConvTranspose2d(256, 128, kernel_size=2, stride=2)
-        self.conv_up2 = DoubleConv(256, 128)
-        self.up3 = nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2)
-        self.conv_up3 = DoubleConv(128, 64)
+        # Encoder
+        in_channels = n_channels
+        for feature in features:
+            self.downs.append(DoubleConv(in_channels, feature))
+            in_channels = feature
+            
+        # Decoder
+        for feature in reversed(features[:-1]):
+            self.ups.append(nn.ConvTranspose2d(feature * 2, feature, kernel_size=2, stride=2))
+            self.ups.append(DoubleConv(feature * 2, feature))
 
-        self.outc = nn.Conv2d(64, n_classes, kernel_size=1)
+        self.outc = nn.Conv2d(features[0], n_classes, kernel_size=1)
 
     def forward(self, x):
-        x1 = self.inc(x)
-        x2 = self.down1(x1)
-        x3 = self.down2(x2)
-        x4 = self.down3(x3)
-
-        x = self.up1(x4)
-        x = torch.cat([x3, x], dim=1)
-        x = self.conv_up1(x)
-
-        x = self.up2(x)
-        x = torch.cat([x2, x], dim=1)
-        x = self.conv_up2(x)
-
-        x = self.up3(x)
-        x = torch.cat([x1, x], dim=1)
-        x = self.conv_up3(x)
-
-        logits = self.outc(x)
-        return logits
+        skips = []
+        
+        for down in self.downs[:-1]:
+            x = down(x)
+            skips.append(x)
+            x = self.pool(x)
+            
+        x = self.downs[-1](x)
+        skips = skips[::-1]
+        
+        for i in range(0, len(self.ups), 2):
+            x = self.ups[i](x)
+            skip_connection = skips[i//2]
+            
+            if x.shape != skip_connection.shape:
+                x = F.interpolate(x, size=skip_connection.shape[2:], mode="bilinear", align_corners=False)
+                
+            concat_skip = torch.cat((skip_connection, x), dim=1)
+            x = self.ups[i+1](concat_skip)
+            
+        return self.outc(x)
