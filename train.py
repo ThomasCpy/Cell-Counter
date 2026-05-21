@@ -7,6 +7,7 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from dataset import CellDataset
 from model import UNet
+from tqdm import tqdm
 
 
 TF_ENABLE_ONEDNN_OPTS=0
@@ -64,7 +65,8 @@ def train_pipeline():
         model.train()
         epoch_loss = 0.0
 
-        for bf, hoechst in train_loader:
+        train_loader_tqdm = tqdm(train_loader, desc=f"Epoch [{epoch+1}/{EPOCHS}] Train")
+        for bf, hoechst in train_loader_tqdm:
             bf = bf.to(device)
             hoechst = hoechst.to(device)
 
@@ -75,6 +77,7 @@ def train_pipeline():
             optimizer.step()
 
             epoch_loss += loss.item()
+            train_loader_tqdm.set_postfix(loss=f"{loss.item():.4f}")
 
         avg_loss = epoch_loss / max(1, len(train_loader))
         
@@ -82,13 +85,15 @@ def train_pipeline():
         model.eval()
         val_loss = 0.0
         with torch.no_grad():
-            for val_bf, val_hoechst in val_loader:
+            val_loader_tqdm = tqdm(val_loader, desc=f"Epoch [{epoch+1}/{EPOCHS}] Val")
+            for val_bf, val_hoechst in val_loader_tqdm:
                 val_bf = val_bf.to(device)
                 val_hoechst = val_hoechst.to(device)
                 
                 val_outputs = model(val_bf)
                 v_loss = criterion(val_outputs, val_hoechst)
                 val_loss += v_loss.item()
+                val_loader_tqdm.set_postfix(loss=f"{v_loss.item():.4f}")
                 
         avg_val_loss = val_loss / max(1, len(val_loader))
         print(f"Epoch [{epoch+1}/{EPOCHS}], Train Loss: {avg_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
