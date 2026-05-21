@@ -27,7 +27,7 @@ def train_pipeline():
 
     # Setup DataLoaders
     #data_dir = "C:/Users/lab/OneDrive - Vandria/Bureau/Cell counter training dataset/Plate 1"
-    data_dir = r"C:/Users/lab/OneDrive - Vandria/Bureau/Cell counter training dataset/Plate 2 HMC3/AcquireOnly.V3_05-21-26_09;29;39"
+    data_dir = r"C:/Users/lab/OneDrive - Vandria/Bureau/Cell counter training dataset/Plate 2 HMC3"
     os.makedirs(data_dir, exist_ok=True)
 
     # Load and split dataset
@@ -112,7 +112,7 @@ def train_pipeline():
     
     # Trace computational graph
     dummy_input = torch.randn(1, 1, CROP_SIZE[0], CROP_SIZE[1]).to(device)
-    onnx_path = "cell_counter_model.onnx"
+    onnx_path = "Vandria_cell_counter_model_HMC3.onnx"
 
     torch.onnx.export(
         model,
