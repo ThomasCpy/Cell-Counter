@@ -21,16 +21,21 @@ def load_as_float(image_path):
     if np.max(img) == 0:
         return img.astype(np.float32)
         
-    img_max = np.max(img)
-    
-    if img.dtype == np.uint8 or img_max <= 255:
+    if img.dtype == np.uint8:
         scale_factor = 255.0
-    elif img_max <= 4095:
-        scale_factor = 4095.0
-    elif img_max <= 16383:
-        scale_factor = 16383.0
-    else:
+    elif img.dtype == np.uint16:
         scale_factor = 65535.0
+    else:
+        # Fallback to dynamic scaling if dtype is non-standard
+        img_max = np.max(img)
+        if img_max <= 255:
+            scale_factor = 255.0
+        elif img_max <= 4095:
+            scale_factor = 4095.0
+        elif img_max <= 16383:
+            scale_factor = 16383.0
+        else:
+            scale_factor = 65535.0
         
     return img.astype(np.float32) / scale_factor
 
@@ -92,10 +97,11 @@ def segment_nuclei(img, max_size=50, use_watershed=True, method='triangle'):
     return nuclei_labels, num_cells
 
 class CellDataset(Dataset):
-    def __init__(self, data_dir, is_train=True, crop_size=(256, 256)):
+    def __init__(self, data_dir, is_train=True, crop_size=(256, 256), preload=False):
         self.data_dir = data_dir
         self.is_train = is_train
         self.crop_size = crop_size
+        self.preload = preload
         
         search_pattern = os.path.join(data_dir, "*.[tT][iI][fF]*")
         all_files = glob.glob(search_pattern)
@@ -136,10 +142,13 @@ class CellDataset(Dataset):
                 v2.ElasticTransform(alpha=50.0, sigma=5.0)
             ])
 
-    def __len__(self):
-        return len(self.pairs)
+        self.cache = {}
+        if self.preload:
+            print(f"Preloading and processing {len(self.pairs)} image pairs into memory...")
+            for idx in range(len(self.pairs)):
+                self.cache[idx] = self._process_image_pair(idx)
 
-    def __getitem__(self, idx):
+    def _process_image_pair(self, idx):
         bf_path = self.pairs[idx]['bf']
         hoechst_path = self.pairs[idx]['hoechst']
 
@@ -148,19 +157,27 @@ class CellDataset(Dataset):
         hoechst_img = load_as_float(hoechst_path)
 
         # Pseudo-flatfield correction (Background Subtraction)
-        # Removes global lighting gradients and well edges without corrupting empty tiles.
         bg = filters.gaussian(bf_img, sigma=50.0)
         bf_img = bf_img - bg
         
         # Safe Per-Image Standardization (Z-score)
-        # Using max(std, 1e-2) prevents dividing by tiny numbers, 
-        # ensuring camera noise isn't amplified in purely black/empty tiles.
         std = np.std(bf_img)
         bf_img = (bf_img - np.mean(bf_img)) / max(std, 1e-2)
 
         # Generate target mask
         nuclei_labels, _ = segment_nuclei(hoechst_img)
         target_mask = (nuclei_labels > 0).astype(np.float32)
+        
+        return bf_img, target_mask
+
+    def __len__(self):
+        return len(self.pairs)
+
+    def __getitem__(self, idx):
+        if self.preload and idx in self.cache:
+            bf_img, target_mask = self.cache[idx]
+        else:
+            bf_img, target_mask = self._process_image_pair(idx)
 
         # Convert to tensors
         bf_tensor = tv_tensors.Image(torch.from_numpy(bf_img).unsqueeze(0))
@@ -239,7 +256,7 @@ def run_qc_segmentation(data_dir="data", qc_dir="QC", num_samples=10):
         
         ax[1].imshow(hoechst_vis, cmap='gray')
         mask = nuclei_labels > 0
-        ax[1].imshow(mask, cmap='blues', alpha=0.3)
+        ax[1].imshow(mask, cmap='Blues', alpha=0.3)
         ax[1].set_title(f"Segmentation Overlay (Count: {num_cells})")
         ax[1].axis('off')
         
