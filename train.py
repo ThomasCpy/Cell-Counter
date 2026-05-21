@@ -8,11 +8,17 @@ from torch.utils.tensorboard import SummaryWriter
 from dataset import CellDataset
 from model import UNet
 
+try:
+    import torch_directml
+    dml_available = True
+except ImportError:
+    dml_available = False
+
 TF_ENABLE_ONEDNN_OPTS=0
 
 def train_pipeline():
     # Set device
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch_directml.device() if dml_available else torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
     # Hyperparameters
@@ -108,10 +114,10 @@ def train_pipeline():
     writer.close()
 
     # Export to ONNX
-    model.eval()
+    model.eval().to("cpu")
     
     # Trace computational graph
-    dummy_input = torch.randn(1, 1, CROP_SIZE[0], CROP_SIZE[1]).to(device)
+    dummy_input = torch.randn(1, 1, CROP_SIZE[0], CROP_SIZE[1]).to("cpu")
     onnx_path = "Vandria_cell_counter_model_HMC3.onnx"
 
     torch.onnx.export(
