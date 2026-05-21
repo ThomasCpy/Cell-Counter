@@ -8,17 +8,12 @@ from torch.utils.tensorboard import SummaryWriter
 from dataset import CellDataset
 from model import UNet
 
-try:
-    import torch_directml
-    dml_available = True
-except ImportError:
-    dml_available = False
 
 TF_ENABLE_ONEDNN_OPTS=0
 
 def train_pipeline():
     # Set device
-    device = torch_directml.device() if dml_available else torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
     # Hyperparameters
