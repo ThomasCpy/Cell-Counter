@@ -21,8 +21,16 @@ def pad_to_multiple(img, multiple=8):
 def run_inference(onnx_path, image_path, threshold=0.5, output_dir="results"):
     print(f"Running inference on: {image_path}")
     
-    # Load the ONNX model
-    session = ort.InferenceSession(onnx_path, providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
+    # Load the ONNX model with DirectML
+    providers = ['DmlExecutionProvider', 'CPUExecutionProvider']
+    session = ort.InferenceSession(onnx_path, providers=providers)
+    
+    active_provider = session.get_providers()[0]
+    if active_provider == 'DmlExecutionProvider':
+        print("Successfully loaded model onto GPU via DirectML.")
+    else:
+        print(f"Warning: DirectML failed to load. Falling back to {active_provider}.")
+        
     input_name = session.get_inputs()[0].name
 
     # Load and preprocess image

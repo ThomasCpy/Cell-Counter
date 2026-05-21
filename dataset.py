@@ -48,6 +48,32 @@ def segment_nuclei(img, max_size=50, use_watershed=True, method='triangle'):
         
     mask = img_smoothed > thresh
 
+    # Identify if the mask caught large continuous areas (like the well background)
+    labeled_mask, num_labels = ndi.label(mask)
+    if num_labels > 0:
+        component_sizes = np.bincount(labeled_mask.ravel())
+        component_sizes[0] = 0 # Ignore background
+        
+        # Consider any region covering more than 5% of the image as a well/background artifact
+        large_labels = np.where(component_sizes > 0.05 * img.size)[0]
+        
+        for label in large_labels:
+            large_region = (labeled_mask == label)
+            region_pixels = img_smoothed[large_region]
+            
+            if len(region_pixels) > 0 and region_pixels.max() > region_pixels.min():
+                if method == 'triangle':
+                    new_thresh = filters.threshold_triangle(region_pixels)
+                elif method == 'li':
+                    new_thresh = filters.threshold_li(region_pixels + 1e-8)
+                else:
+                    new_thresh = filters.threshold_otsu(region_pixels)
+                
+                refined_region = large_region & (img_smoothed > new_thresh)
+                mask = (mask & ~large_region) | refined_region
+            else:
+                mask = mask & ~large_region
+
     mask_cleaned = morphology.remove_small_objects(mask, max_size=max_size)
     
     if use_watershed:

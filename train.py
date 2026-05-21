@@ -112,6 +112,13 @@ def train_pipeline():
             writer.add_images('Images/Predictions', preds, epoch)
 
     writer.close()
+    
+    # Save PyTorch state dictionary for future training
+    pth_path = "Vandria_cell_counter_model_HMC3.pth"
+    # Make sure to move model back to CPU before saving to ensure compatibility 
+    # when loading on machines without a GPU.
+    torch.save(model.to("cpu").state_dict(), pth_path)
+    print(f"Saved PyTorch weights for future training to {pth_path}")
 
     # Export to ONNX
     model.eval().to("cpu")
