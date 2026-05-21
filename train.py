@@ -20,7 +20,7 @@ def train_pipeline():
     BATCH_SIZE = 16
     LEARNING_RATE = 1e-4
     EPOCHS = 50
-    NUM_WORKERS = 4
+    NUM_WORKERS = 8
 
     # Initialize model
     model = UNet(n_channels=1, n_classes=1).to(device)
