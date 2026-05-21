@@ -8,6 +8,8 @@ from torch.utils.tensorboard import SummaryWriter
 from dataset import CellDataset
 from model import UNet
 
+TF_ENABLE_ONEDNN_OPTS=0
+
 def train_pipeline():
     # Set device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -15,6 +17,10 @@ def train_pipeline():
 
     # Hyperparameters
     CROP_SIZE = (256, 256)
+    BATCH_SIZE = 16
+    LEARNING_RATE = 1e-4
+    EPOCHS = 50
+    NUM_WORKERS = 4
 
     # Initialize model
     model = UNet(n_channels=1, n_classes=1).to(device)
@@ -39,20 +45,20 @@ def train_pipeline():
     val_dataset = CellDataset(data_dir=data_dir, is_train=False, crop_size=CROP_SIZE)
     val_dataset.pairs = full_dataset.pairs[train_size:]
 
-    train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True, num_workers=0)
-    val_loader = DataLoader(val_dataset, batch_size=4, shuffle=False, num_workers=0)
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=NUM_WORKERS)
+    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS)
 
     # Setup loss and optimizer
-    pos_weight = torch.tensor([9.0])  #ig we have mainly background
+    pos_weight = torch.tensor([7.0])  #ig we have mainly background
     criterion = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-    optimizer = optim.Adam(model.parameters(), lr=1e-4)
+    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
     # Initialize TensorBoard writer
-    writer = SummaryWriter('runs/cell_counter_experiment_pos_weight_9')
+    writer = SummaryWriter('runs/cell_counter_experiment_pos_weight_7')
 
     # Training loop
-    epochs = 50
-    for epoch in range(epochs):
+    
+    for epoch in range(EPOCHS):
         model.train()
         epoch_loss = 0.0
 
@@ -83,14 +89,14 @@ def train_pipeline():
                 val_loss += v_loss.item()
                 
         avg_val_loss = val_loss / max(1, len(val_loader))
-        print(f"Epoch [{epoch+1}/{epochs}], Train Loss: {avg_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
+        print(f"Epoch [{epoch+1}/{EPOCHS}], Train Loss: {avg_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
         
         # Log metrics
         writer.add_scalar('Loss/Train', avg_loss, epoch)
         writer.add_scalar('Loss/Validation', avg_val_loss, epoch)
         
         # Log sample images
-        if epoch % 5 == 0 or epoch == epochs - 1:
+        if epoch % 5 == 0 or epoch == EPOCHS - 1:
             writer.add_images('Images/Brightfield', val_bf, epoch)
             writer.add_images('Images/GroundTruth', val_hoechst, epoch)
             
