@@ -230,7 +230,7 @@ def run_qc_segmentation(data_dir="data", qc_dir="QC", num_samples=10):
         
         ax[1].imshow(hoechst_vis, cmap='gray')
         mask = nuclei_labels > 0
-        ax[1].imshow(mask, cmap='Reds', alpha=0.3)
+        ax[1].imshow(mask, cmap='blues', alpha=0.3)
         ax[1].set_title(f"Segmentation Overlay (Count: {num_cells})")
         ax[1].axis('off')
         
@@ -242,4 +242,4 @@ def run_qc_segmentation(data_dir="data", qc_dir="QC", num_samples=10):
     print(f"Saved {len(samples)} QC images to {qc_dir}")
 
 if __name__ == "__main__":
-    run_qc_segmentation(data_dir=r"C:\Users\lab\OneDrive - Vandria\Bureau\Cell counter training dataset\Plate 2 HMC3")
+    run_qc_segmentation(data_dir=r"C:\Users\lab\OneDrive - Vandria\Bureau\Cell counter training dataset\Plate 2 HMC3", num_samples=1000)
