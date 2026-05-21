@@ -38,6 +38,15 @@ def run_inference(onnx_path, image_path, threshold=0.5, output_dir="results"):
     if img is None:
         print(f"Error: Could not load image {image_path}")
         return
+        
+    # Pseudo-flatfield correction (Background Subtraction)
+    # Must match the preprocessing used during training
+    bg = ndi.gaussian_filter(img, sigma=50.0)
+    img = img - bg
+    
+    # Safe Per-Image Standardization (Z-score)
+    std = np.std(img)
+    img = (img - np.mean(img)) / max(std, 1e-2)
 
     # Pad image
     padded_img, orig_h, orig_w = pad_to_multiple(img, multiple=8)

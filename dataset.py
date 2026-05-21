@@ -6,6 +6,8 @@ import torch
 import numpy as np
 from torch.utils.data import Dataset
 import torchvision.transforms.functional as TF
+from torchvision.transforms import v2
+from torchvision import tv_tensors
 from skimage import io, filters, morphology, feature, segmentation, exposure
 import scipy.ndimage as ndi
 import matplotlib.pyplot as plt
@@ -124,6 +126,15 @@ class CellDataset(Dataset):
                 
         # Sort pairs deterministically
         self.pairs = sorted(self.pairs, key=lambda x: x['bf'])
+        
+        # Setup v2 transforms for training
+        if self.is_train:
+            self.spatial_transforms = v2.Compose([
+                v2.RandomHorizontalFlip(p=0.5),
+                v2.RandomVerticalFlip(p=0.5),
+                v2.RandomRotation(degrees=180.0),
+                v2.ElasticTransform(alpha=50.0, sigma=5.0)
+            ])
 
     def __len__(self):
         return len(self.pairs)
@@ -136,13 +147,24 @@ class CellDataset(Dataset):
         bf_img = load_as_float(bf_path)
         hoechst_img = load_as_float(hoechst_path)
 
+        # Pseudo-flatfield correction (Background Subtraction)
+        # Removes global lighting gradients and well edges without corrupting empty tiles.
+        bg = filters.gaussian(bf_img, sigma=50.0)
+        bf_img = bf_img - bg
+        
+        # Safe Per-Image Standardization (Z-score)
+        # Using max(std, 1e-2) prevents dividing by tiny numbers, 
+        # ensuring camera noise isn't amplified in purely black/empty tiles.
+        std = np.std(bf_img)
+        bf_img = (bf_img - np.mean(bf_img)) / max(std, 1e-2)
+
         # Generate target mask
         nuclei_labels, _ = segment_nuclei(hoechst_img)
         target_mask = (nuclei_labels > 0).astype(np.float32)
 
         # Convert to tensors
-        bf_tensor = torch.from_numpy(bf_img).unsqueeze(0)
-        hoechst_tensor = torch.from_numpy(target_mask).unsqueeze(0)
+        bf_tensor = tv_tensors.Image(torch.from_numpy(bf_img).unsqueeze(0))
+        hoechst_tensor = tv_tensors.Mask(torch.from_numpy(target_mask).unsqueeze(0))
 
         # Pad and crop
         _, h, w = bf_tensor.shape
@@ -171,26 +193,13 @@ class CellDataset(Dataset):
 
         # Data augmentation
         if self.is_train:
-            # Horizontal flip
-            if random.random() > 0.5:
-                bf_tensor = TF.hflip(bf_tensor)
-                hoechst_tensor = TF.hflip(hoechst_tensor)
+            # Apply all spatial transforms elegantly at once
+            bf_tensor, hoechst_tensor = self.spatial_transforms(bf_tensor, hoechst_tensor)
 
-            # Vertical flip
+            # Random Gaussian Noise (simulates camera read noise)
             if random.random() > 0.5:
-                bf_tensor = TF.vflip(bf_tensor)
-                hoechst_tensor = TF.vflip(hoechst_tensor)
-
-            # Rotation
-            if random.random() > 0.5:
-                angle = random.uniform(-180, 180)
-                bf_tensor = TF.rotate(bf_tensor, angle)
-                hoechst_tensor = TF.rotate(hoechst_tensor, angle)
-
-            # Brightness adjustment
-            if random.random() > 0.5:
-                brightness_factor = random.uniform(0.7, 1.3) # Darken or lighten by up to 30%
-                bf_tensor = TF.adjust_brightness(bf_tensor, brightness_factor)
+                noise = torch.randn_like(bf_tensor) * 0.1
+                bf_tensor = bf_tensor + noise
 
         return bf_tensor, hoechst_tensor
 
