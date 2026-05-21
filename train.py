@@ -26,7 +26,8 @@ def train_pipeline():
     model = UNet(n_channels=1, n_classes=1).to(device)
 
     # Setup DataLoaders
-    data_dir = "C:/Users/lab/OneDrive - Vandria/Bureau/Cell counter training dataset/Plate 1"
+    #data_dir = "C:/Users/lab/OneDrive - Vandria/Bureau/Cell counter training dataset/Plate 1"
+    data_dir = r"C:/Users/lab/OneDrive - Vandria/Bureau/Cell counter training dataset/Plate 2 HMC3/AcquireOnly.V3_05-21-26_09;29;39"
     os.makedirs(data_dir, exist_ok=True)
 
     # Load and split dataset
@@ -54,7 +55,7 @@ def train_pipeline():
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
     # Initialize TensorBoard writer
-    writer = SummaryWriter('runs/cell_counter_experiment_pos_weight_7')
+    writer = SummaryWriter('runs/cell_counter_hmc3')
 
     # Training loop
     

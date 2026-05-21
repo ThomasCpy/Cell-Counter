@@ -32,7 +32,7 @@ def load_as_float(image_path):
         
     return img.astype(np.float32) / scale_factor
 
-def segment_nuclei(img, max_size=5, use_watershed=True, method='triangle'):
+def segment_nuclei(img, max_size=50, use_watershed=True, method='triangle'):
     """Segment Hoechst channel to identify nuclei markers."""
     if img is None or np.max(img) == 0: 
         return None, 0
@@ -52,7 +52,7 @@ def segment_nuclei(img, max_size=5, use_watershed=True, method='triangle'):
     
     if use_watershed:
         distance = ndi.distance_transform_edt(mask_cleaned)
-        coords = feature.peak_local_max(distance, min_distance=20, labels=mask_cleaned)
+        coords = feature.peak_local_max(distance, min_distance=15, labels=mask_cleaned)
         marker_mask = np.zeros(distance.shape, dtype=bool)
         marker_mask[tuple(coords.T)] = True
         markers, _ = ndi.label(marker_mask)
@@ -216,4 +216,4 @@ def run_qc_segmentation(data_dir="data", qc_dir="QC", num_samples=10):
     print(f"Saved {len(samples)} QC images to {qc_dir}")
 
 if __name__ == "__main__":
-    run_qc_segmentation(data_dir="C:/Users/lab/OneDrive - Vandria/Bureau/Cell counter training dataset/Plate 1")
+    run_qc_segmentation(data_dir=r"C:\Users\lab\OneDrive - Vandria\Bureau\Cell counter training dataset\Plate 2 HMC3")
