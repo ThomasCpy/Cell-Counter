@@ -308,7 +308,7 @@ def run_qc_segmentation(data_dir="data", qc_dir="QC", num_samples=10):
     print(f"Saved {len(samples)} QC images to {qc_dir}")
 
 if __name__ == "__main__":
+        
+    run_debug_samples(data_dir=r"C:\Users\lab\OneDrive - Vandria\Bureau\Cell counter training dataset\Plate 2 HMC3", num_samples=100)
     run_qc_segmentation(data_dir=r"C:\Users\lab\OneDrive - Vandria\Bureau\Cell counter training dataset\Plate 2 HMC3", num_samples=1000)
     
-    # Uncomment the line below to test the training dataset augmentations directly
-    # run_debug_samples(data_dir=r"C:\Users\lab\OneDrive - Vandria\Bureau\Cell counter training dataset\Plate 2 HMC3", num_samples=10)
