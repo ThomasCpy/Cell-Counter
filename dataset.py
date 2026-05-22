@@ -215,10 +215,57 @@ class CellDataset(Dataset):
 
             # Random Gaussian Noise (simulates camera read noise)
             if random.random() > 0.5:
-                noise = torch.randn_like(bf_tensor) * 0.1
+                noise = torch.randn_like(bf_tensor) * 0.01
                 bf_tensor = bf_tensor + noise
 
         return bf_tensor, hoechst_tensor
+
+def run_debug_samples(data_dir="data", debug_dir="debug_samples", num_samples=10):
+    """Run dataset pipeline to visualize augmented inputs directly."""
+    os.makedirs(debug_dir, exist_ok=True)
+    
+    # Initialize dataset in training mode to see augmentations
+    dataset = CellDataset(data_dir=data_dir, is_train=True)
+    
+    if len(dataset) == 0:
+        print(f"No image pairs found in '{data_dir}'.")
+        return
+        
+    num_to_save = min(num_samples, len(dataset))
+    for i in range(num_to_save):
+        bf_tensor, hoechst_tensor = dataset[i]
+        
+        # Convert back to numpy for visualization
+        bf_img = bf_tensor.squeeze(0).numpy()
+        mask = hoechst_tensor.squeeze(0).numpy()
+        
+        # Min-Max scale brightfield back to [0, 1] for saving
+        bf_min, bf_max = bf_img.min(), bf_img.max()
+        if bf_max > bf_min:
+            bf_vis = (bf_img - bf_min) / (bf_max - bf_min)
+        else:
+            bf_vis = bf_img
+            
+        fig, ax = plt.subplots(1, 3, figsize=(15, 5))
+        ax[0].imshow(bf_vis, cmap='gray')
+        ax[0].set_title(f"Model Input (Brightfield)\nMin: {bf_min:.2f}, Max: {bf_max:.2f}")
+        ax[0].axis('off')
+        
+        ax[1].imshow(mask, cmap='Blues', vmin=0, vmax=1)
+        ax[1].set_title("Target Mask")
+        ax[1].axis('off')
+        
+        ax[2].imshow(bf_vis, cmap='gray')
+        ax[2].imshow(mask, cmap='Reds', alpha=0.3, vmin=0, vmax=1)
+        ax[2].set_title("Overlay")
+        ax[2].axis('off')
+        
+        plt.tight_layout()
+        out_path = os.path.join(debug_dir, f"debug_sample_{i}.png")
+        plt.savefig(out_path, dpi=150, bbox_inches='tight')
+        plt.close(fig)
+        
+    print(f"Saved {num_to_save} debug samples to '{debug_dir}'")
 
 def run_qc_segmentation(data_dir="data", qc_dir="QC", num_samples=10):
     """Run QC on nuclear segmentation and save side-by-side comparisons."""
@@ -269,3 +316,6 @@ def run_qc_segmentation(data_dir="data", qc_dir="QC", num_samples=10):
 
 if __name__ == "__main__":
     run_qc_segmentation(data_dir=r"C:\Users\lab\OneDrive - Vandria\Bureau\Cell counter training dataset\Plate 2 HMC3", num_samples=1000)
+    
+    # Uncomment the line below to test the training dataset augmentations directly
+    # run_debug_samples(data_dir=r"C:\Users\lab\OneDrive - Vandria\Bureau\Cell counter training dataset\Plate 2 HMC3", num_samples=10)
