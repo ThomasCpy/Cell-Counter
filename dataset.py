@@ -138,8 +138,7 @@ class CellDataset(Dataset):
             self.spatial_transforms = v2.Compose([
                 v2.RandomHorizontalFlip(p=0.5),
                 v2.RandomVerticalFlip(p=0.5),
-                v2.RandomRotation(degrees=180.0),
-                v2.ElasticTransform(alpha=50.0, sigma=5.0)
+                v2.ElasticTransform(alpha=30.0, sigma=5.0)
             ])
 
         self.cache = {}
@@ -212,11 +211,6 @@ class CellDataset(Dataset):
         if self.is_train:
             # Apply all spatial transforms elegantly at once
             bf_tensor, hoechst_tensor = self.spatial_transforms(bf_tensor, hoechst_tensor)
-
-            # Random Gaussian Noise (simulates camera read noise)
-            if random.random() > 0.5:
-                noise = torch.randn_like(bf_tensor) * 0.01
-                bf_tensor = bf_tensor + noise
 
         return bf_tensor, hoechst_tensor
 
