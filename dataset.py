@@ -137,8 +137,7 @@ class CellDataset(Dataset):
         if self.is_train:
             self.spatial_transforms = v2.Compose([
                 v2.RandomHorizontalFlip(p=0.5),
-                v2.RandomVerticalFlip(p=0.5),
-                v2.ElasticTransform(alpha=30.0, sigma=5.0)
+                v2.RandomVerticalFlip(p=0.5)
             ])
 
         self.cache = {}
