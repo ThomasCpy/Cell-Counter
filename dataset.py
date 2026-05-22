@@ -6,8 +6,6 @@ import torch
 import numpy as np
 from torch.utils.data import Dataset
 import torchvision.transforms.functional as TF
-from torchvision.transforms import v2
-from torchvision import tv_tensors
 from skimage import io, filters, morphology, feature, segmentation, exposure
 import scipy.ndimage as ndi
 import matplotlib.pyplot as plt
@@ -133,12 +131,6 @@ class CellDataset(Dataset):
         # Sort pairs deterministically
         self.pairs = sorted(self.pairs, key=lambda x: x['bf'])
         
-        # Setup v2 transforms for training
-        if self.is_train:
-            self.spatial_transforms = v2.Compose([
-                v2.RandomHorizontalFlip(p=0.5),
-                v2.RandomVerticalFlip(p=0.5)
-            ])
 
         self.cache = {}
         if self.preload:
@@ -178,8 +170,8 @@ class CellDataset(Dataset):
             bf_img, target_mask = self._process_image_pair(idx)
 
         # Convert to tensors
-        bf_tensor = tv_tensors.Image(torch.from_numpy(bf_img).unsqueeze(0))
-        hoechst_tensor = tv_tensors.Mask(torch.from_numpy(target_mask).unsqueeze(0))
+        bf_tensor = torch.from_numpy(bf_img).unsqueeze(0)
+        hoechst_tensor = torch.from_numpy(target_mask).unsqueeze(0)
 
         # Pad and crop
         _, h, w = bf_tensor.shape
@@ -208,8 +200,12 @@ class CellDataset(Dataset):
 
         # Data augmentation
         if self.is_train:
-            # Apply all spatial transforms elegantly at once
-            bf_tensor, hoechst_tensor = self.spatial_transforms(bf_tensor, hoechst_tensor)
+            if random.random() > 0.5:
+                bf_tensor = TF.hflip(bf_tensor)
+                hoechst_tensor = TF.hflip(hoechst_tensor)
+            if random.random() > 0.5:
+                bf_tensor = TF.vflip(bf_tensor)
+                hoechst_tensor = TF.vflip(hoechst_tensor)
 
         return bf_tensor, hoechst_tensor
 
