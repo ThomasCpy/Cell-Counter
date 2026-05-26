@@ -356,7 +356,8 @@ def run_qc_segmentation(data_dir="data", qc_dir="QC", num_samples=10):
         
         centroids = [prop.centroid for prop in regionprops(nuclei_labels)]
         heatmap = generate_gaussian_blobs(hoechst_img.shape, centroids, sigma=4.0)
-        ax[2].imshow(heatmap, cmap='magma')
+        ax[2].imshow(hoechst_vis, cmap='gray')
+        ax[2].imshow(heatmap, cmap='magma', alpha=0.5, vmin=0, vmax=1)
         ax[2].set_title("Gaussian Blobs (Target)")
         ax[2].axis('off')
         
