@@ -5,29 +5,22 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
-from dataset import CellDataset, label_cells_from_mask
+from dataset import CellDataset
+from skimage.feature import peak_local_max
 from model import UNet
 from tqdm import tqdm
 
 
 TF_ENABLE_ONEDNN_OPTS=0
 
-class BCEDiceLoss(nn.Module):
-    def __init__(self, pos_weight=None, smooth=1.0):
-        super(BCEDiceLoss, self).__init__()
-        self.bce = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-        self.smooth = smooth
+class HeatmapLoss(nn.Module):
+    def __init__(self):
+        super(HeatmapLoss, self).__init__()
+        self.mse = nn.MSELoss()
 
     def forward(self, logits, targets):
-        bce_loss = self.bce(logits, targets)
-        
         probs = torch.sigmoid(logits)
-        probs_flat = probs.view(-1)
-        targets_flat = targets.view(-1)
-        intersection = (probs_flat * targets_flat).sum()
-        dice_loss = 1 - (2. * intersection + self.smooth) / (probs_flat.sum() + targets_flat.sum() + self.smooth)
-        
-        return bce_loss + dice_loss
+        return self.mse(probs, targets)
 
 def train_pipeline():
     # Set device
@@ -68,8 +61,7 @@ def train_pipeline():
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS)
 
     # Setup loss and optimizer
-    pos_weight = torch.tensor([7.0]).to(device)  # Adjust for class imbalance (predominantly background)
-    criterion = BCEDiceLoss(pos_weight=pos_weight)
+    criterion = HeatmapLoss()
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
@@ -113,13 +105,13 @@ def train_pipeline():
                 val_loss += v_loss.item()
                 val_loader_tqdm.set_postfix(loss=f"{v_loss.item():.4f}")
                 
-                # Compute count accuracy using watershed
-                preds = (torch.sigmoid(val_outputs) > 0.5).cpu().numpy()
+                # Compute count accuracy using local maxima
+                preds = torch.sigmoid(val_outputs).cpu().numpy()
                 targets = val_hoechst.cpu().numpy()
                 for b in range(preds.shape[0]):
-                    _, pred_count = label_cells_from_mask(preds[b, 0])
-                    _, target_count = label_cells_from_mask(targets[b, 0])
-                    val_count_error += abs(pred_count - target_count)
+                    pred_coords = peak_local_max(preds[b, 0], min_distance=5, threshold_abs=0.3)
+                    target_coords = peak_local_max(targets[b, 0], min_distance=5, threshold_abs=0.5)
+                    val_count_error += abs(len(pred_coords) - len(target_coords))
 
         avg_val_loss = val_loss / max(1, len(val_loader))
         val_mae = val_count_error / max(1, len(val_dataset))
@@ -139,8 +131,8 @@ def train_pipeline():
             writer.add_images('Images/Brightfield', val_bf, epoch)
             writer.add_images('Images/GroundTruth', val_hoechst, epoch)
             
-            # Generate binary mask for visualization
-            preds = (torch.sigmoid(val_outputs) > 0.5).float()
+            # Generate heatmap for visualization
+            preds = torch.sigmoid(val_outputs)
             writer.add_images('Images/Predictions', preds, epoch)
 
     writer.close()

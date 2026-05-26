@@ -5,7 +5,8 @@ import numpy as np
 import onnxruntime as ort
 import scipy.ndimage as ndi
 import matplotlib.pyplot as plt
-from dataset import load_as_float, label_cells_from_mask
+from dataset import load_as_float
+from skimage.feature import peak_local_max
 
 def pad_to_multiple(img, multiple=8):
     """Pad image dimensions to a specified multiple."""
@@ -63,10 +64,10 @@ def run_inference(onnx_path, image_path, threshold=0.5, output_dir="results"):
     
     # Post-process
     probs = 1.0 / (1.0 + np.exp(-logits))
-    binary_mask = probs > threshold
 
-    # Extract count
-    labeled_mask, num_cells = label_cells_from_mask(binary_mask)
+    # Extract count via local maxima
+    coords = peak_local_max(probs, min_distance=5, threshold_abs=threshold)
+    num_cells = len(coords)
     print(f">>> Final Counted Cells: {num_cells} <<<\n")
 
     # Setup output directory
@@ -87,16 +88,10 @@ def run_inference(onnx_path, image_path, threshold=0.5, output_dir="results"):
 
     ax[2].imshow(img, cmap='gray')
     
-    # Shuffle labels to assign visually distinct colors to adjacent cells
-    display_labels = labeled_mask.copy()
     if num_cells > 0:
-        mapping = np.arange(num_cells + 1)
-        np.random.shuffle(mapping[1:])
-        display_labels = mapping[labeled_mask]
+        ax[2].plot(coords[:, 1], coords[:, 0], 'r.', markersize=6)
         
-    overlay = np.ma.masked_where(labeled_mask == 0, display_labels)
-    ax[2].imshow(overlay, cmap='hsv', alpha=0.4)
-    ax[2].set_title(f"Overlay (Count: {num_cells})")
+    ax[2].set_title(f"Detections (Count: {num_cells})")
     ax[2].axis('off')
 
     plt.tight_layout()

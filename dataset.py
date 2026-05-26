@@ -7,6 +7,7 @@ import numpy as np
 from torch.utils.data import Dataset
 import torchvision.transforms.functional as TF
 from skimage import io, filters, morphology, feature, segmentation, exposure
+from skimage.measure import regionprops
 import scipy.ndimage as ndi
 import matplotlib.pyplot as plt
 
@@ -97,6 +98,30 @@ def segment_nuclei(img, max_size=50, min_distance=15, use_watershed=True, method
 
     return nuclei_labels, num_cells
 
+def generate_gaussian_blobs(shape, centroids, sigma=4.0):
+    """Generate a heatmap with a Gaussian blob at each centroid."""
+    heatmap = np.zeros(shape, dtype=np.float32)
+    h, w = shape
+    
+    for (y, x) in centroids:
+        y0, x0 = int(round(y)), int(round(x))
+        
+        # Calculate bounds for the local Gaussian patch
+        size = int(4 * sigma)
+        y_min, y_max = max(0, y0 - size), min(h, y0 + size + 1)
+        x_min, x_max = max(0, x0 - size), min(w, x0 + size + 1)
+        
+        if y_max <= y_min or x_max <= x_min:
+            continue
+            
+        X, Y = np.meshgrid(np.arange(x_min, x_max), np.arange(y_min, y_max))
+        d2 = (X - x0)**2 + (Y - y0)**2
+        mask = np.exp(-d2 / (2.0 * sigma * sigma))
+        
+        heatmap[y_min:y_max, x_min:x_max] = np.maximum(heatmap[y_min:y_max, x_min:x_max], mask)
+        
+    return heatmap
+
 def label_cells_from_mask(mask, min_distance=15, max_size=50):
     """Segment cells in a binary mask using watershed and return labels and count."""
     mask_cleaned = morphology.remove_small_objects(mask.astype(bool), max_size=max_size)
@@ -178,11 +203,12 @@ class CellDataset(Dataset):
         std = np.std(bf_img)
         bf_img = (bf_img - np.mean(bf_img)) / max(std, 1e-2)
 
-        # Generate target mask
+        # Generate target Gaussian heatmaps based on watershed centroids
         nuclei_labels, _ = segment_nuclei(hoechst_img)
-        target_mask = (nuclei_labels > 0).astype(np.float32)
+        centroids = [prop.centroid for prop in regionprops(nuclei_labels)]
+        target_heatmap = generate_gaussian_blobs(hoechst_img.shape, centroids, sigma=4.0)
         
-        return bf_img, target_mask
+        return bf_img, target_heatmap
 
     def __len__(self):
         return len(self.pairs)
@@ -264,13 +290,13 @@ def run_debug_samples(data_dir="data", debug_dir="debug_samples", num_samples=10
         ax[0].set_title(f"Model Input (Brightfield)\nMin: {bf_min:.2f}, Max: {bf_max:.2f}")
         ax[0].axis('off')
         
-        ax[1].imshow(mask, cmap='Blues', vmin=0, vmax=1)
-        ax[1].set_title("Target Mask")
+        ax[1].imshow(mask, cmap='magma', vmin=0, vmax=1)
+        ax[1].set_title("Target Heatmap")
         ax[1].axis('off')
         
         ax[2].imshow(bf_vis, cmap='gray')
-        ax[2].imshow(mask, cmap='Reds', alpha=0.3, vmin=0, vmax=1)
-        ax[2].set_title("Overlay")
+        ax[2].imshow(mask, cmap='magma', alpha=0.5, vmin=0, vmax=1)
+        ax[2].set_title("Heatmap Overlay")
         ax[2].axis('off')
         
         plt.tight_layout()
@@ -308,7 +334,7 @@ def run_qc_segmentation(data_dir="data", qc_dir="QC", num_samples=10):
         # Apply CLAHE for visualization to enhance contrast without altering raw data
         hoechst_vis = exposure.equalize_adapthist(hoechst_img, clip_limit=0.03)
         
-        fig, ax = plt.subplots(1, 2, figsize=(12, 6))
+        fig, ax = plt.subplots(1, 3, figsize=(18, 6))
         
         ax[0].imshow(hoechst_vis, cmap='gray')
         ax[0].set_title("Hoechst (CLAHE)")
@@ -325,8 +351,14 @@ def run_qc_segmentation(data_dir="data", qc_dir="QC", num_samples=10):
             
         overlay = np.ma.masked_where(nuclei_labels == 0, display_labels)
         ax[1].imshow(overlay, cmap='hsv', alpha=0.4)
-        ax[1].set_title(f"Segmentation Overlay (Count: {num_cells})")
+        ax[1].set_title(f"Watershed Unique Cells (Count: {num_cells})")
         ax[1].axis('off')
+        
+        centroids = [prop.centroid for prop in regionprops(nuclei_labels)]
+        heatmap = generate_gaussian_blobs(hoechst_img.shape, centroids, sigma=4.0)
+        ax[2].imshow(heatmap, cmap='magma')
+        ax[2].set_title("Gaussian Blobs (Target)")
+        ax[2].axis('off')
         
         plt.tight_layout()
         out_path = os.path.join(qc_dir, f"QC_{name_no_ext}.png")
