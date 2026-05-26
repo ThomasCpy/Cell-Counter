@@ -81,6 +81,9 @@ def segment_nuclei(img, min_size=50, use_watershed=True, method='triangle'):
 
     mask_cleaned = morphology.remove_small_objects(mask, min_size=min_size)
     
+    # Shrink the masks slightly to better match the true nuclei size
+    mask_cleaned = morphology.erosion(mask_cleaned, morphology.disk(1))
+    
     if use_watershed:
         distance = ndi.distance_transform_edt(mask_cleaned)
         coords = feature.peak_local_max(distance, min_distance=15, labels=mask_cleaned)
@@ -97,6 +100,10 @@ def segment_nuclei(img, min_size=50, use_watershed=True, method='triangle'):
 def label_cells_from_mask(mask, min_distance=15, min_size=50):
     """Segment cells in a binary mask using watershed and return labels and count."""
     mask_cleaned = morphology.remove_small_objects(mask.astype(bool), min_size=min_size)
+    
+    # Apply a light erosion to tighten predicted boundaries
+    mask_cleaned = morphology.erosion(mask_cleaned, morphology.disk(1))
+    
     if not np.any(mask_cleaned):
         return np.zeros_like(mask, dtype=int), 0
     distance = ndi.distance_transform_edt(mask_cleaned)
