@@ -37,7 +37,7 @@ def load_as_float(image_path):
         
     return img.astype(np.float32) / scale_factor
 
-def segment_nuclei(img, max_size=50, use_watershed=True, method='triangle'):
+def segment_nuclei(img, min_size=50, use_watershed=True, method='triangle'):
     """Segment Hoechst channel to identify nuclei markers."""
     if img is None or np.max(img) == 0: 
         return None, 0
@@ -79,7 +79,7 @@ def segment_nuclei(img, max_size=50, use_watershed=True, method='triangle'):
             else:
                 mask = mask & ~large_region
 
-    mask_cleaned = morphology.remove_small_objects(mask, max_size=max_size)
+    mask_cleaned = morphology.remove_small_objects(mask, min_size=min_size)
     
     if use_watershed:
         distance = ndi.distance_transform_edt(mask_cleaned)
@@ -94,6 +94,21 @@ def segment_nuclei(img, max_size=50, use_watershed=True, method='triangle'):
 
     return nuclei_labels, num_cells
 
+def label_cells_from_mask(mask, min_distance=15, min_size=50):
+    """Segment cells in a binary mask using watershed and return labels and count."""
+    mask_cleaned = morphology.remove_small_objects(mask.astype(bool), min_size=min_size)
+    if not np.any(mask_cleaned):
+        return np.zeros_like(mask, dtype=int), 0
+    distance = ndi.distance_transform_edt(mask_cleaned)
+    coords = feature.peak_local_max(distance, min_distance=min_distance, labels=mask_cleaned)
+    if len(coords) == 0:
+        return np.zeros_like(mask, dtype=int), 0
+    marker_mask = np.zeros(distance.shape, dtype=bool)
+    marker_mask[tuple(coords.T)] = True
+    markers, _ = ndi.label(marker_mask)
+    nuclei_labels = segmentation.watershed(-distance, markers, mask=mask_cleaned)
+    return nuclei_labels, np.max(nuclei_labels)
+
 class CellDataset(Dataset):
     def __init__(self, data_dir, is_train=True, crop_size=(256, 256), preload=False):
         self.data_dir = data_dir
@@ -101,21 +116,23 @@ class CellDataset(Dataset):
         self.crop_size = crop_size
         self.preload = preload
         
-        search_pattern = os.path.join(data_dir, "*.[tT][iI][fF]*")
-        all_files = glob.glob(search_pattern)
+        search_pattern = os.path.join(data_dir, "**", "*.[tT][iI][fF]*")
+        all_files = glob.glob(search_pattern, recursive=True)
         
         # Parse filenames
         pattern = re.compile(r'^(.*_([A-H]\d{2})f(\d{2})d)(\d)(.*)$')
         
         pairs_dict = {}
         for f in all_files:
-            match = pattern.search(f)
+            dirname = os.path.dirname(f)
+            basename = os.path.basename(f)
+            match = pattern.search(basename)
             if match:
                 base_prefix = match.group(1)
                 channel = match.group(4)
                 suffix = match.group(5)
                 
-                key = base_prefix + suffix
+                key = os.path.join(dirname, base_prefix + suffix)
                 if key not in pairs_dict:
                     pairs_dict[key] = {}
                 pairs_dict[key][channel] = f

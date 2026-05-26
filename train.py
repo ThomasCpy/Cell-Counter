@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
-from dataset import CellDataset
+from dataset import CellDataset, label_cells_from_mask
 from model import UNet
 from tqdm import tqdm
 
@@ -45,8 +45,7 @@ def train_pipeline():
     model = UNet(n_channels=1, n_classes=1).to(device)
 
     # Setup DataLoaders
-    #data_dir = "C:/Users/lab/OneDrive - Vandria/Bureau/Cell counter training dataset/Plate 1"
-    data_dir = r"C:/Users/lab/OneDrive - Vandria/Bureau/Cell counter training dataset/Plate 2 HMC3"
+    data_dir = r"C:\Users\lab\OneDrive - Vandria\Bureau\Cell counter training dataset"
     os.makedirs(data_dir, exist_ok=True)
 
     # Load and split dataset
@@ -75,7 +74,7 @@ def train_pipeline():
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
     # Initialize TensorBoard writer
-    writer = SummaryWriter('runs/cell_counter_hmc3')
+    writer = SummaryWriter('runs/cell_counter_all')
 
     # Training loop
     
@@ -102,6 +101,7 @@ def train_pipeline():
         # Validation loop
         model.eval()
         val_loss = 0.0
+        val_count_error = 0.0
         with torch.no_grad():
             val_loader_tqdm = tqdm(val_loader, desc=f"Epoch [{epoch+1}/{EPOCHS}] Val")
             for val_bf, val_hoechst in val_loader_tqdm:
@@ -113,12 +113,22 @@ def train_pipeline():
                 val_loss += v_loss.item()
                 val_loader_tqdm.set_postfix(loss=f"{v_loss.item():.4f}")
                 
+                # Compute count accuracy using watershed
+                preds = (torch.sigmoid(val_outputs) > 0.5).cpu().numpy()
+                targets = val_hoechst.cpu().numpy()
+                for b in range(preds.shape[0]):
+                    _, pred_count = label_cells_from_mask(preds[b, 0])
+                    _, target_count = label_cells_from_mask(targets[b, 0])
+                    val_count_error += abs(pred_count - target_count)
+
         avg_val_loss = val_loss / max(1, len(val_loader))
-        print(f"Epoch [{epoch+1}/{EPOCHS}], Train Loss: {avg_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
+        val_mae = val_count_error / max(1, len(val_dataset))
+        print(f"Epoch [{epoch+1}/{EPOCHS}], Train Loss: {avg_loss:.4f}, Val Loss: {avg_val_loss:.4f}, Val Count MAE: {val_mae:.2f}")
         
         # Log metrics
         writer.add_scalar('Loss/Train', avg_loss, epoch)
         writer.add_scalar('Loss/Validation', avg_val_loss, epoch)
+        writer.add_scalar('Metrics/Val_Count_MAE', val_mae, epoch)
         
         # Step the scheduler and log learning rate
         scheduler.step(avg_val_loss)
@@ -136,7 +146,7 @@ def train_pipeline():
     writer.close()
     
     # Save PyTorch state dictionary for future training
-    pth_path = "Vandria_cell_counter_model_HMC3.pth"
+    pth_path = "Vandria_cell_counter_model_All.pth"
     # Transfer model to CPU prior to saving to guarantee compatibility
     # across devices without GPU support.
     torch.save(model.to("cpu").state_dict(), pth_path)
@@ -147,7 +157,7 @@ def train_pipeline():
     
     # Trace computational graph
     dummy_input = torch.randn(1, 1, CROP_SIZE[0], CROP_SIZE[1]).to("cpu")
-    onnx_path = "Vandria_cell_counter_model_HMC3.onnx"
+    onnx_path = "Vandria_cell_counter_model_All.onnx"
 
     torch.onnx.export(
         model,

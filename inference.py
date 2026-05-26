@@ -5,7 +5,7 @@ import numpy as np
 import onnxruntime as ort
 import scipy.ndimage as ndi
 import matplotlib.pyplot as plt
-from dataset import load_as_float
+from dataset import load_as_float, label_cells_from_mask
 
 def pad_to_multiple(img, multiple=8):
     """Pad image dimensions to a specified multiple."""
@@ -66,7 +66,7 @@ def run_inference(onnx_path, image_path, threshold=0.5, output_dir="results"):
     binary_mask = probs > threshold
 
     # Extract count
-    labeled_mask, num_cells = ndi.label(binary_mask)
+    labeled_mask, num_cells = label_cells_from_mask(binary_mask)
     print(f">>> Final Counted Cells: {num_cells} <<<\n")
 
     # Setup output directory
@@ -86,7 +86,8 @@ def run_inference(onnx_path, image_path, threshold=0.5, output_dir="results"):
     ax[1].axis('off')
 
     ax[2].imshow(img, cmap='gray')
-    ax[2].imshow(binary_mask, cmap='Reds', alpha=0.4)
+    overlay = np.ma.masked_where(labeled_mask == 0, labeled_mask)
+    ax[2].imshow(overlay, cmap='hsv', alpha=0.4)
     ax[2].set_title(f"Overlay (Count: {num_cells})")
     ax[2].axis('off')
 
