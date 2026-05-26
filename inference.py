@@ -86,7 +86,15 @@ def run_inference(onnx_path, image_path, threshold=0.5, output_dir="results"):
     ax[1].axis('off')
 
     ax[2].imshow(img, cmap='gray')
-    overlay = np.ma.masked_where(labeled_mask == 0, labeled_mask)
+    
+    # Shuffle labels to assign visually distinct colors to adjacent cells
+    display_labels = labeled_mask.copy()
+    if num_cells > 0:
+        mapping = np.arange(num_cells + 1)
+        np.random.shuffle(mapping[1:])
+        display_labels = mapping[labeled_mask]
+        
+    overlay = np.ma.masked_where(labeled_mask == 0, display_labels)
     ax[2].imshow(overlay, cmap='hsv', alpha=0.4)
     ax[2].set_title(f"Overlay (Count: {num_cells})")
     ax[2].axis('off')

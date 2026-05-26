@@ -315,7 +315,15 @@ def run_qc_segmentation(data_dir="data", qc_dir="QC", num_samples=10):
         ax[0].axis('off')
         
         ax[1].imshow(hoechst_vis, cmap='gray')
-        overlay = np.ma.masked_where(nuclei_labels == 0, nuclei_labels)
+        
+        # Shuffle labels to assign visually distinct colors to adjacent cells
+        display_labels = nuclei_labels.copy()
+        if num_cells > 0:
+            mapping = np.arange(num_cells + 1)
+            np.random.shuffle(mapping[1:])
+            display_labels = mapping[nuclei_labels]
+            
+        overlay = np.ma.masked_where(nuclei_labels == 0, display_labels)
         ax[1].imshow(overlay, cmap='hsv', alpha=0.4)
         ax[1].set_title(f"Segmentation Overlay (Count: {num_cells})")
         ax[1].axis('off')
