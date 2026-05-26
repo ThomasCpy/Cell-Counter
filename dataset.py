@@ -37,7 +37,7 @@ def load_as_float(image_path):
         
     return img.astype(np.float32) / scale_factor
 
-def segment_nuclei(img, max_size=50, use_watershed=True, method='triangle'):
+def segment_nuclei(img, max_size=50, min_distance=15, use_watershed=True, method='triangle'):
     """Segment Hoechst channel to identify nuclei markers."""
     if img is None or np.max(img) == 0: 
         return None, 0
@@ -86,7 +86,7 @@ def segment_nuclei(img, max_size=50, use_watershed=True, method='triangle'):
     
     if use_watershed:
         distance = ndi.distance_transform_edt(mask_cleaned)
-        coords = feature.peak_local_max(distance, min_distance=15, labels=mask_cleaned)
+        coords = feature.peak_local_max(distance, min_distance=min_distance, labels=mask_cleaned)
         marker_mask = np.zeros(distance.shape, dtype=bool)
         marker_mask[tuple(coords.T)] = True
         markers, _ = ndi.label(marker_mask)
