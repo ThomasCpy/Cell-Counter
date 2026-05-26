@@ -37,7 +37,7 @@ def load_as_float(image_path):
         
     return img.astype(np.float32) / scale_factor
 
-def segment_nuclei(img, min_size=50, use_watershed=True, method='triangle'):
+def segment_nuclei(img, max_size=50, use_watershed=True, method='triangle'):
     """Segment Hoechst channel to identify nuclei markers."""
     if img is None or np.max(img) == 0: 
         return None, 0
@@ -79,7 +79,7 @@ def segment_nuclei(img, min_size=50, use_watershed=True, method='triangle'):
             else:
                 mask = mask & ~large_region
 
-    mask_cleaned = morphology.remove_small_objects(mask, min_size=min_size)
+    mask_cleaned = morphology.remove_small_objects(mask, max_size=max_size)
     
     # Shrink the masks slightly to better match the true nuclei size
     mask_cleaned = morphology.erosion(mask_cleaned, morphology.disk(1))
@@ -97,9 +97,9 @@ def segment_nuclei(img, min_size=50, use_watershed=True, method='triangle'):
 
     return nuclei_labels, num_cells
 
-def label_cells_from_mask(mask, min_distance=15, min_size=50):
+def label_cells_from_mask(mask, min_distance=15, max_size=50):
     """Segment cells in a binary mask using watershed and return labels and count."""
-    mask_cleaned = morphology.remove_small_objects(mask.astype(bool), min_size=min_size)
+    mask_cleaned = morphology.remove_small_objects(mask.astype(bool), max_size=max_size)
     
     # Apply a light erosion to tighten predicted boundaries
     mask_cleaned = morphology.erosion(mask_cleaned, morphology.disk(1))
@@ -315,8 +315,8 @@ def run_qc_segmentation(data_dir="data", qc_dir="QC", num_samples=10):
         ax[0].axis('off')
         
         ax[1].imshow(hoechst_vis, cmap='gray')
-        mask = nuclei_labels > 0
-        ax[1].imshow(mask, cmap='Blues', alpha=0.3)
+        overlay = np.ma.masked_where(nuclei_labels == 0, nuclei_labels)
+        ax[1].imshow(overlay, cmap='hsv', alpha=0.4)
         ax[1].set_title(f"Segmentation Overlay (Count: {num_cells})")
         ax[1].axis('off')
         
