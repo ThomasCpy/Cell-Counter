@@ -113,7 +113,7 @@ def run_inference(onnx_path, image_path, threshold=0.5, output_dir="results"):
     print(f"Appended count to {csv_path}\n")
 
 if __name__ == "__main__":
-    onnx_model_path = "cell_counter_model.onnx"
+    onnx_model_path = "Vandria_cell_counter_model.onnx"
     
     test_image = "data/test_image.tif" 
     

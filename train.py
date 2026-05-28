@@ -66,7 +66,7 @@ def train_pipeline():
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
     # Initialize TensorBoard writer
-    writer = SummaryWriter('runs/cell_counter_all')
+    writer = SummaryWriter('runs/cell_counter_all_run2')
 
     # Training loop
     
