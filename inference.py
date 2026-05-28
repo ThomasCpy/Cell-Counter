@@ -113,9 +113,9 @@ def run_inference(onnx_path, image_path, threshold=0.5, output_dir="results"):
     print(f"Appended count to {csv_path}\n")
 
 if __name__ == "__main__":
-    onnx_model_path = "Vandria_cell_counter_model.onnx"
+    onnx_model_path = "Vandria_cell_counter_model_morphology_HMC3.onnx"
     
-    test_image = "data/test_image.tif" 
+    test_image = "test_image.TIFF" 
     
     if not os.path.exists(onnx_model_path):
         print(f"Cannot find {onnx_model_path}. Make sure you run train.py first!")
