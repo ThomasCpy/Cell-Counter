@@ -213,27 +213,21 @@ def run_batch_inference(onnx_path, input_dir, threshold=0.5, output_dir="results
     all_files = glob.glob(search_pattern, recursive=True)
     
     results = []
-    pattern = re.compile(r'^.*_([A-H]\d{2})f(\d{2})d(\d)(.*?)\.[a-zA-Z0-9]+$')
+    pattern = re.compile(r't(\d{3})([A-H]\d{2})f(\d{2})d(\d)')
 
     os.makedirs(output_dir, exist_ok=True)
 
     for file_path in all_files:
         basename = os.path.basename(file_path)
-        match = pattern.match(basename)
+        match = pattern.search(basename)
         if not match:
             continue
             
-        well = match.group(1)
-        field = match.group(2)
-        channel = match.group(3)
-        suffix = match.group(4)
+        time_str, well, field, channel = match.groups()
         
-        # Brightfield channel
         if channel != '1':
             continue
-            
-        time_match = re.search(r't(\d+)', suffix, re.IGNORECASE)
-        time_idx = int(time_match.group(1)) if time_match else None
+        time_idx = int(time_str)
         
         img = load_as_float(file_path)
         if img is None:
