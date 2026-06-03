@@ -92,9 +92,9 @@ def parse_tecan_d300e_xml(file_path):
 
     return treatment_output
 
-def run_inference(onnx_path, input_path, threshold=0.5, output_dir="results", dtt_path=None):
+def run_inference(onnx_path, input_path, threshold=0.5, output_dir="results", dtt_path=None, save_qc=False):
     if os.path.isdir(input_path):
-        run_batch_inference(onnx_path, input_path, threshold, output_dir, dtt_path)
+        run_batch_inference(onnx_path, input_path, threshold, output_dir, dtt_path, save_qc)
     else:
         run_single_inference(onnx_path, input_path, threshold, output_dir)
 
@@ -191,7 +191,7 @@ def run_single_inference(onnx_path, image_path, threshold=0.5, output_dir="resul
         writer.writerow([base_name, num_cells])
     print(f"Appended count to {csv_path}\n")
 
-def run_batch_inference(onnx_path, input_dir, threshold=0.5, output_dir="results", dtt_path=None):
+def run_batch_inference(onnx_path, input_dir, threshold=0.5, output_dir="results", dtt_path=None, save_qc=False):
     print(f"Running batch inference on directory: {input_dir}")
     
     providers = ['DmlExecutionProvider', 'CPUExecutionProvider']
@@ -248,6 +248,31 @@ def run_batch_inference(onnx_path, input_dir, threshold=0.5, output_dir="results
         probs = 1.0 / (1.0 + np.exp(-logits))
         coords = peak_local_max(probs, min_distance=5, threshold_abs=threshold)
         num_cells = len(coords)
+
+        if save_qc:
+            qc_dir = os.path.join(output_dir, "QC")
+            os.makedirs(qc_dir, exist_ok=True)
+            name, _ = os.path.splitext(basename)
+            fig, ax = plt.subplots(1, 3, figsize=(16, 6))
+            
+            ax[0].imshow(img, cmap='gray')
+            ax[0].set_title("Original Brightfield")
+            ax[0].axis('off')
+
+            ax[1].imshow(probs, cmap='viridis')
+            ax[1].set_title("Model Output (Probabilities)")
+            ax[1].axis('off')
+
+            ax[2].imshow(img, cmap='gray')
+            if num_cells > 0:
+                ax[2].plot(coords[:, 1], coords[:, 0], 'r.', markersize=6)
+            ax[2].set_title(f"Detections (Count: {num_cells})")
+            ax[2].axis('off')
+
+            plt.tight_layout()
+            out_img_path = os.path.join(qc_dir, f"{name}_overlay.png")
+            plt.savefig(out_img_path, bbox_inches='tight')
+            plt.close(fig)
         
         treatment = treatments.get(well, "Unknown") if treatments else "Unknown"
         
@@ -303,9 +328,10 @@ if __name__ == "__main__":
     parser.add_argument("--dtt", type=str, default="./Tecan files", help="Path to Tecan D300e .dtt file")
     parser.add_argument("--threshold", type=float, default=0.5, help="Detection threshold")
     parser.add_argument("--output", type=str, default="Results/Test run", help="Output directory")
+    parser.add_argument("--save-qc", action="store_true", help="Save QC overlays during batch inference")
     args = parser.parse_args()
     
     if not os.path.exists(args.model):
         print(f"Cannot find {args.model}. Make sure you run train.py first!")
     else:
-        run_inference(args.model, args.input, threshold=args.threshold, output_dir=args.output, dtt_path=args.dtt)
+        run_inference(args.model, args.input, threshold=args.threshold, output_dir=args.output, dtt_path=args.dtt, save_qc=args.save_qc)
