@@ -299,10 +299,10 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Run cell counter inference")
     parser.add_argument("--model", type=str, default="Vandria_cell_counter_model_All.onnx", help="Path to ONNX model")
-    parser.add_argument("--input", type=str, default="test_image.TIFF", help="Path to image file or directory")
-    parser.add_argument("--dtt", type=str, default=None, help="Path to Tecan D300e .dtt file")
+    parser.add_argument("--input", type=str, default="./Data test run", help="Path to image file or directory")
+    parser.add_argument("--dtt", type=str, default="./Tecan files", help="Path to Tecan D300e .dtt file")
     parser.add_argument("--threshold", type=float, default=0.5, help="Detection threshold")
-    parser.add_argument("--output", type=str, default="results", help="Output directory")
+    parser.add_argument("--output", type=str, default="Results/Test run", help="Output directory")
     args = parser.parse_args()
     
     if not os.path.exists(args.model):
