@@ -100,7 +100,10 @@ def _get_worker_session(onnx_path):
     global _worker_session, _worker_input_name
     if _worker_session is None:
         import onnxruntime as ort
-        _worker_session = ort.InferenceSession(onnx_path, providers=['CPUExecutionProvider'])
+        sess_options = ort.SessionOptions()
+        sess_options.intra_op_num_threads = 1
+        sess_options.inter_op_num_threads = 1
+        _worker_session = ort.InferenceSession(onnx_path, sess_options=sess_options, providers=['CPUExecutionProvider'])
         _worker_input_name = _worker_session.get_inputs()[0].name
     return _worker_session, _worker_input_name
 
