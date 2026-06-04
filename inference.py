@@ -178,9 +178,9 @@ def process_file_worker(args):
     session, input_name = _get_worker_session(onnx_path)
     return process_single_file(file_path, session, input_name, threshold, output_dir, save_qc, treatments)
 
-def run_inference(onnx_path, input_path, threshold=0.5, output_dir="results", dtt_path=None, save_qc=False):
+def run_inference(onnx_path, input_path, threshold=0.5, output_dir="results", dtt_path=None, save_qc=False, max_workers=4):
     if os.path.isdir(input_path):
-        run_batch_inference(onnx_path, input_path, threshold, output_dir, dtt_path, save_qc)
+        run_batch_inference(onnx_path, input_path, threshold, output_dir, dtt_path, save_qc, max_workers)
     else:
         run_single_inference(onnx_path, input_path, threshold, output_dir)
 
@@ -277,7 +277,7 @@ def run_single_inference(onnx_path, image_path, threshold=0.5, output_dir="resul
         writer.writerow([base_name, num_cells])
     print(f"Appended count to {csv_path}\n")
 
-def run_batch_inference(onnx_path, input_dir, threshold=0.5, output_dir="results", dtt_path=None, save_qc=False):
+def run_batch_inference(onnx_path, input_dir, threshold=0.5, output_dir="results", dtt_path=None, save_qc=False, max_workers=4):
     print(f"Running batch inference on directory: {input_dir}")
     
     providers = ['DmlExecutionProvider', 'CPUExecutionProvider']
@@ -289,7 +289,6 @@ def run_batch_inference(onnx_path, input_dir, threshold=0.5, output_dir="results
         print("Successfully loaded model onto GPU via DirectML.")
     else:
         print(f"Warning: DirectML failed to load. Falling back to {active_provider}.")
-        print("Using concurrent.futures to accelerate CPU inference...")
         
     input_name = session.get_inputs()[0].name
 
@@ -306,9 +305,11 @@ def run_batch_inference(onnx_path, input_dir, threshold=0.5, output_dir="results
     os.makedirs(output_dir, exist_ok=True)
 
     if is_cpu:
+        workers = min(os.cpu_count() or 1, max_workers)
+        print(f"Using ProcessPoolExecutor with {workers} workers to balance speed and memory usage...")
         args_list = [(f, onnx_path, threshold, output_dir, save_qc, treatments) for f in all_files]
-        with concurrent.futures.ProcessPoolExecutor() as executor:
-            for result in executor.map(process_file_worker, args_list):
+        with concurrent.futures.ProcessPoolExecutor(max_workers=workers) as executor:
+            for result in executor.map(process_file_worker, args_list, chunksize=1):
                 if result is not None:
                     results.append(result)
     else:
@@ -360,9 +361,10 @@ if __name__ == "__main__":
     parser.add_argument("--threshold", type=float, default=0.5, help="Detection threshold")
     parser.add_argument("--output", type=str, default="Results/Test run", help="Output directory")
     parser.add_argument("--save-qc", action="store_true", help="Save QC overlays during batch inference")
+    parser.add_argument("--max-workers", type=int, default=4, help="Maximum number of CPU workers for parallel batch inference")
     args = parser.parse_args()
     
     if not os.path.exists(args.model):
         print(f"Cannot find {args.model}. Make sure you run train.py first!")
     else:
-        run_inference(args.model, args.input, threshold=args.threshold, output_dir=args.output, dtt_path=args.dtt, save_qc=args.save_qc)
+        run_inference(args.model, args.input, threshold=args.threshold, output_dir=args.output, dtt_path=args.dtt, save_qc=args.save_qc, max_workers=args.max_workers)
