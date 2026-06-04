@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from dataset import load_as_float
 from skimage.feature import peak_local_max
+import concurrent.futures
 
 def pad_to_multiple(img, multiple=8):
     """Pad image dimensions to a specified multiple."""
@@ -91,6 +92,91 @@ def parse_tecan_d300e_xml(file_path):
             treatment_output[well_name] = "Vehicle"
 
     return treatment_output
+
+_worker_session = None
+_worker_input_name = None
+
+def _get_worker_session(onnx_path):
+    global _worker_session, _worker_input_name
+    if _worker_session is None:
+        import onnxruntime as ort
+        _worker_session = ort.InferenceSession(onnx_path, providers=['CPUExecutionProvider'])
+        _worker_input_name = _worker_session.get_inputs()[0].name
+    return _worker_session, _worker_input_name
+
+def process_single_file(file_path, session, input_name, threshold, output_dir, save_qc, treatments):
+    basename = os.path.basename(file_path)
+    pattern = re.compile(r't(\d{3})([A-H]\d{2})f(\d{2})d(\d)')
+    match = pattern.search(basename)
+    if not match:
+        return None
+        
+    time_str, well, field, channel = match.groups()
+    if channel != '1':
+        return None
+    time_idx = int(time_str)
+    
+    img = load_as_float(file_path)
+    if img is None:
+        return None
+        
+    bg = ndi.gaussian_filter(img, sigma=50.0)
+    img = img - bg
+    std = np.std(img)
+    img = (img - np.mean(img)) / max(std, 1e-2)
+
+    padded_img, orig_h, orig_w = pad_to_multiple(img, multiple=8)
+    input_tensor = np.expand_dims(padded_img, axis=(0, 1)).astype(np.float32)
+
+    outputs = session.run(None, {input_name: input_tensor})
+    logits = outputs[0][0, 0]
+    logits = logits[:orig_h, :orig_w]
+    
+    probs = 1.0 / (1.0 + np.exp(-logits))
+    coords = peak_local_max(probs, min_distance=5, threshold_abs=threshold)
+    num_cells = len(coords)
+
+    if save_qc:
+        qc_dir = os.path.join(output_dir, "QC")
+        os.makedirs(qc_dir, exist_ok=True)
+        name, _ = os.path.splitext(basename)
+        fig, ax = plt.subplots(1, 3, figsize=(16, 6))
+        
+        ax[0].imshow(img, cmap='gray')
+        ax[0].set_title("Original Brightfield")
+        ax[0].axis('off')
+
+        ax[1].imshow(probs, cmap='viridis')
+        ax[1].set_title("Model Output (Probabilities)")
+        ax[1].axis('off')
+
+        ax[2].imshow(img, cmap='gray')
+        if num_cells > 0:
+            ax[2].plot(coords[:, 1], coords[:, 0], 'r.', markersize=6)
+        ax[2].set_title(f"Detections (Count: {num_cells})")
+        ax[2].axis('off')
+
+        plt.tight_layout()
+        out_img_path = os.path.join(qc_dir, f"{name}_overlay.png")
+        plt.savefig(out_img_path, bbox_inches='tight')
+        plt.close(fig)
+    
+    treatment = treatments.get(well, "Unknown") if treatments else "Unknown"
+    
+    print(f"Processed {basename} - Count: {num_cells}")
+    return {
+        'File': basename,
+        'Well': well,
+        'Field': field,
+        'Time': time_idx,
+        'Treatment': treatment,
+        'Count': num_cells
+    }
+
+def process_file_worker(args):
+    file_path, onnx_path, threshold, output_dir, save_qc, treatments = args
+    session, input_name = _get_worker_session(onnx_path)
+    return process_single_file(file_path, session, input_name, threshold, output_dir, save_qc, treatments)
 
 def run_inference(onnx_path, input_path, threshold=0.5, output_dir="results", dtt_path=None, save_qc=False):
     if os.path.isdir(input_path):
@@ -197,10 +283,13 @@ def run_batch_inference(onnx_path, input_dir, threshold=0.5, output_dir="results
     providers = ['DmlExecutionProvider', 'CPUExecutionProvider']
     session = ort.InferenceSession(onnx_path, providers=providers)
     active_provider = session.get_providers()[0]
-    if active_provider == 'DmlExecutionProvider':
+    
+    is_cpu = active_provider != 'DmlExecutionProvider'
+    if not is_cpu:
         print("Successfully loaded model onto GPU via DirectML.")
     else:
         print(f"Warning: DirectML failed to load. Falling back to {active_provider}.")
+        print("Using concurrent.futures to accelerate CPU inference...")
         
     input_name = session.get_inputs()[0].name
 
@@ -213,78 +302,20 @@ def run_batch_inference(onnx_path, input_dir, threshold=0.5, output_dir="results
     all_files = glob.glob(search_pattern, recursive=True)
     
     results = []
-    pattern = re.compile(r't(\d{3})([A-H]\d{2})f(\d{2})d(\d)')
 
     os.makedirs(output_dir, exist_ok=True)
 
-    for file_path in all_files:
-        basename = os.path.basename(file_path)
-        match = pattern.search(basename)
-        if not match:
-            continue
-            
-        time_str, well, field, channel = match.groups()
-        
-        if channel != '1':
-            continue
-        time_idx = int(time_str)
-        
-        img = load_as_float(file_path)
-        if img is None:
-            continue
-            
-        bg = ndi.gaussian_filter(img, sigma=50.0)
-        img = img - bg
-        std = np.std(img)
-        img = (img - np.mean(img)) / max(std, 1e-2)
-
-        padded_img, orig_h, orig_w = pad_to_multiple(img, multiple=8)
-        input_tensor = np.expand_dims(padded_img, axis=(0, 1)).astype(np.float32)
-
-        outputs = session.run(None, {input_name: input_tensor})
-        logits = outputs[0][0, 0]
-        logits = logits[:orig_h, :orig_w]
-        
-        probs = 1.0 / (1.0 + np.exp(-logits))
-        coords = peak_local_max(probs, min_distance=5, threshold_abs=threshold)
-        num_cells = len(coords)
-
-        if save_qc:
-            qc_dir = os.path.join(output_dir, "QC")
-            os.makedirs(qc_dir, exist_ok=True)
-            name, _ = os.path.splitext(basename)
-            fig, ax = plt.subplots(1, 3, figsize=(16, 6))
-            
-            ax[0].imshow(img, cmap='gray')
-            ax[0].set_title("Original Brightfield")
-            ax[0].axis('off')
-
-            ax[1].imshow(probs, cmap='viridis')
-            ax[1].set_title("Model Output (Probabilities)")
-            ax[1].axis('off')
-
-            ax[2].imshow(img, cmap='gray')
-            if num_cells > 0:
-                ax[2].plot(coords[:, 1], coords[:, 0], 'r.', markersize=6)
-            ax[2].set_title(f"Detections (Count: {num_cells})")
-            ax[2].axis('off')
-
-            plt.tight_layout()
-            out_img_path = os.path.join(qc_dir, f"{name}_overlay.png")
-            plt.savefig(out_img_path, bbox_inches='tight')
-            plt.close(fig)
-        
-        treatment = treatments.get(well, "Unknown") if treatments else "Unknown"
-        
-        results.append({
-            'File': basename,
-            'Well': well,
-            'Field': field,
-            'Time': time_idx,
-            'Treatment': treatment,
-            'Count': num_cells
-        })
-        print(f"Processed {basename} - Count: {num_cells}")
+    if is_cpu:
+        args_list = [(f, onnx_path, threshold, output_dir, save_qc, treatments) for f in all_files]
+        with concurrent.futures.ProcessPoolExecutor() as executor:
+            for result in executor.map(process_file_worker, args_list):
+                if result is not None:
+                    results.append(result)
+    else:
+        for file_path in all_files:
+            result = process_single_file(file_path, session, input_name, threshold, output_dir, save_qc, treatments)
+            if result is not None:
+                results.append(result)
 
     if not results:
         print("No valid brightfield images found or processed.")
