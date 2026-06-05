@@ -181,6 +181,65 @@ def process_file_worker(args):
     session, input_name = _get_worker_session(onnx_path)
     return process_single_file(file_path, session, input_name, threshold, output_dir, save_qc, treatments)
 
+def generate_plots(well_time_counts, output_dir):
+    # 1. Original Plot (Aggregated by Treatment)
+    plt.figure(figsize=(10, 6))
+    sns.lineplot(data=well_time_counts, x='Time', y='Count', hue='Treatment', err_style="bars", marker='o')
+    plt.title('Cell Count Over Time')
+    plt.ylabel('Total Cell Count (Per Well)')
+    plt.xlabel('Time')
+    plt.legend(title='Treatment', bbox_to_anchor=(1.05, 1), loc='upper left')
+    plt.tight_layout()
+    plot_path = os.path.join(output_dir, "cell_count_over_time.png")
+    plt.savefig(plot_path, bbox_inches='tight')
+    plt.close()
+    print(f"Saved lineplot to {plot_path}.")
+    
+    # Calculate initial counts for normalization per well
+    initial_counts = well_time_counts.loc[well_time_counts.groupby('Well')['Time'].idxmin()]
+    initial_counts_dict = initial_counts.set_index('Well')['Count'].to_dict()
+    well_time_counts['Initial_Count'] = well_time_counts['Well'].map(initial_counts_dict)
+    
+    # Calculate Percentage Change, preventing division by zero
+    mask = well_time_counts['Initial_Count'] > 0
+    well_time_counts['Pct_Change'] = np.nan
+    well_time_counts.loc[mask, 'Pct_Change'] = ((well_time_counts.loc[mask, 'Count'] - well_time_counts.loc[mask, 'Initial_Count']) / well_time_counts.loc[mask, 'Initial_Count']) * 100
+    
+    # 2. Normalized Plot (Aggregated by Treatment)
+    plt.figure(figsize=(10, 6))
+    sns.lineplot(data=well_time_counts, x='Time', y='Pct_Change', hue='Treatment', err_style="bars", marker='o')
+    plt.title('Normalized Cell Count Over Time')
+    plt.ylabel('Percentage Change from Initial (%)')
+    plt.xlabel('Time')
+    plt.legend(title='Treatment', bbox_to_anchor=(1.05, 1), loc='upper left')
+    plt.tight_layout()
+    plot_path_norm = os.path.join(output_dir, "cell_count_over_time_normalized.png")
+    plt.savefig(plot_path_norm, bbox_inches='tight')
+    plt.close()
+    print(f"Saved normalized lineplot to {plot_path_norm}.")
+    
+    # 3. Faceted Unnormalized Plot (Individual wells)
+    g = sns.relplot(data=well_time_counts, x='Time', y='Count', hue='Well', col='Treatment', col_wrap=4, kind='line', marker='o', height=4, aspect=1)
+    g.set_axis_labels("Time", "Total Cell Count")
+    g.set_titles("{col_name}")
+    g.fig.subplots_adjust(top=0.9)
+    g.fig.suptitle('Cell Count Over Time per Well')
+    plot_path_fac = os.path.join(output_dir, "cell_count_per_well_faceted.png")
+    g.savefig(plot_path_fac)
+    plt.close(g.fig)
+    print(f"Saved faceted plot to {plot_path_fac}.")
+    
+    # 4. Faceted Normalized Plot (Individual wells)
+    g_norm = sns.relplot(data=well_time_counts, x='Time', y='Pct_Change', hue='Well', col='Treatment', col_wrap=4, kind='line', marker='o', height=4, aspect=1)
+    g_norm.set_axis_labels("Time", "Percentage Change (%)")
+    g_norm.set_titles("{col_name}")
+    g_norm.fig.subplots_adjust(top=0.9)
+    g_norm.fig.suptitle('Normalized Cell Count Over Time per Well')
+    plot_path_fac_norm = os.path.join(output_dir, "cell_count_per_well_faceted_normalized.png")
+    g_norm.savefig(plot_path_fac_norm)
+    plt.close(g_norm.fig)
+    print(f"Saved normalized faceted plot to {plot_path_fac_norm}.")
+
 def replot_only(output_dir, dtt_path):
     print(f"Running in plot-only mode using data in {output_dir}")
     
@@ -219,17 +278,7 @@ def replot_only(output_dir, dtt_path):
             print(f"Updated per-timepoint sheets in {time_xlsx}.")
             
             well_time_counts = combined_df.groupby(['Time', 'Well', 'Treatment'])['Count'].sum().reset_index()
-            plt.figure(figsize=(10, 6))
-            sns.lineplot(data=well_time_counts, x='Time', y='Count', hue='Treatment', err_style="bars", marker='o')
-            plt.title('Cell Count Over Time')
-            plt.ylabel('Total Cell Count (Per Well)')
-            plt.xlabel('Time')
-            plt.legend(title='Treatment', bbox_to_anchor=(1.05, 1), loc='upper left')
-            plt.tight_layout()
-            plot_path = os.path.join(output_dir, "cell_count_over_time.png")
-            plt.savefig(plot_path, bbox_inches='tight')
-            plt.close()
-            print(f"Updated lineplot saved to {plot_path}.")
+            generate_plots(well_time_counts, output_dir)
             
     elif os.path.exists(well_xlsx):
         df = pd.read_excel(well_xlsx)
@@ -401,17 +450,7 @@ def run_batch_inference(onnx_path, input_dir, threshold=0.5, output_dir="results
         print(f"\nSaved per-timepoint sheets to {out_xlsx}.")
         
         well_time_counts = df.groupby(['Time', 'Well', 'Treatment'])['Count'].sum().reset_index()
-        plt.figure(figsize=(10, 6))
-        sns.lineplot(data=well_time_counts, x='Time', y='Count', hue='Treatment', err_style="bars", marker='o')
-        plt.title('Cell Count Over Time')
-        plt.ylabel('Total Cell Count (Per Well)')
-        plt.xlabel('Time')
-        plt.legend(title='Treatment', bbox_to_anchor=(1.05, 1), loc='upper left')
-        plt.tight_layout()
-        plot_path = os.path.join(output_dir, "cell_count_over_time.png")
-        plt.savefig(plot_path, bbox_inches='tight')
-        plt.close()
-        print(f"Saved lineplot to {plot_path}.")
+        generate_plots(well_time_counts, output_dir)
 
 if __name__ == "__main__":
     import argparse
