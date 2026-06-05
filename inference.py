@@ -457,12 +457,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run cell counter inference")
     parser.add_argument("--model", type=str, default="Vandria_cell_counter_model_All.onnx", help="Path to ONNX model")
     parser.add_argument("--input", type=str, default="./Data test run/localhost260602100003", help="Path to image file or directory")
-    parser.add_argument("--dtt", type=str, default="./Tecan files/2026-06-02_VNA _p3_RHO182", help="Path to Tecan D300e .dtt file")
+    parser.add_argument("--dtt", type=str, default="./Tecan files/2026-06-02_VNA _p3_RHO182.tdd", help="Path to Tecan D300e .dtt file")
     parser.add_argument("--threshold", type=float, default=0.5, help="Detection threshold")
     parser.add_argument("--output", type=str, default="Results/Test run", help="Output directory")
     parser.add_argument("--save-qc", action="store_true", help="Save QC overlays during batch inference")
     parser.add_argument("--max-workers", type=int, default=4, help="Maximum number of CPU workers for parallel batch inference")
-    parser.add_argument("--plot-only", action="store_true", help="Do not run inference; only re-parse tecan file and replot existing results")
+    parser.add_argument("--plot-only", default=True, action="store_true", help="Do not run inference; only re-parse tecan file and replot existing results")
     args = parser.parse_args()
     
     dtt_path = args.dtt
