@@ -50,8 +50,8 @@ def parse_tecan_d300e_xml(file_path):
     randomize_node = plate.find('Randomize')
     if randomize_node is not None:
         for r_well in randomize_node.findall('Well'):
-            physical_pos = (int(r_well.get('R')), int(r_well.get('C')))
-            logical_pos = (int(r_well.get('ToR')), int(r_well.get('ToC')))
+            logical_pos = (int(r_well.get('R')), int(r_well.get('C')))
+            physical_pos = (int(r_well.get('ToR')), int(r_well.get('ToC')))
             final_destination_map[logical_pos] = physical_pos
 
     well_treatments = defaultdict(list)
@@ -180,6 +180,64 @@ def process_file_worker(args):
     file_path, onnx_path, threshold, output_dir, save_qc, treatments = args
     session, input_name = _get_worker_session(onnx_path)
     return process_single_file(file_path, session, input_name, threshold, output_dir, save_qc, treatments)
+
+def replot_only(output_dir, dtt_path):
+    print(f"Running in plot-only mode using data in {output_dir}")
+    
+    treatments = {}
+    if dtt_path and os.path.exists(dtt_path):
+        print(f"Parsing DTT file: {dtt_path}")
+        treatments = parse_tecan_d300e_xml(dtt_path)
+    else:
+        print(f"Warning: DTT file {dtt_path} not found. Cannot update treatments.")
+        return
+
+    time_xlsx = os.path.join(output_dir, "counts_per_timepoint.xlsx")
+    well_xlsx = os.path.join(output_dir, "per_well_counts.xlsx")
+    
+    if os.path.exists(time_xlsx):
+        all_dfs = []
+        xl = pd.ExcelFile(time_xlsx)
+        for sheet_name in xl.sheet_names:
+            df = xl.parse(sheet_name)
+            time_str = sheet_name.replace('Time_', '')
+            try:
+                t = int(time_str)
+            except ValueError:
+                t = 0
+            df['Time'] = t
+            all_dfs.append(df)
+            
+        if all_dfs:
+            combined_df = pd.concat(all_dfs, ignore_index=True)
+            combined_df['Treatment'] = combined_df['Well'].map(lambda w: treatments.get(w, "Unknown"))
+            
+            with pd.ExcelWriter(time_xlsx) as writer:
+                for t, group in combined_df.groupby('Time'):
+                    t_well_counts = group.groupby(['Well', 'Treatment'])['Count'].sum().reset_index()
+                    t_well_counts.to_excel(writer, sheet_name=f'Time_{int(t)}', index=False)
+            print(f"Updated per-timepoint sheets in {time_xlsx}.")
+            
+            well_time_counts = combined_df.groupby(['Time', 'Well', 'Treatment'])['Count'].sum().reset_index()
+            plt.figure(figsize=(10, 6))
+            sns.lineplot(data=well_time_counts, x='Time', y='Count', hue='Treatment', err_style="bars", marker='o')
+            plt.title('Cell Count Over Time')
+            plt.ylabel('Total Cell Count (Per Well)')
+            plt.xlabel('Time')
+            plt.legend(title='Treatment', bbox_to_anchor=(1.05, 1), loc='upper left')
+            plt.tight_layout()
+            plot_path = os.path.join(output_dir, "cell_count_over_time.png")
+            plt.savefig(plot_path, bbox_inches='tight')
+            plt.close()
+            print(f"Updated lineplot saved to {plot_path}.")
+            
+    elif os.path.exists(well_xlsx):
+        df = pd.read_excel(well_xlsx)
+        df['Treatment'] = df['Well'].map(lambda w: treatments.get(w, "Unknown"))
+        df.to_excel(well_xlsx, index=False)
+        print(f"Updated per well counts in {well_xlsx}.")
+    else:
+        print(f"No existing Excel files found in {output_dir} to replot.")
 
 def run_inference(onnx_path, input_path, threshold=0.5, output_dir="results", dtt_path=None, save_qc=False, max_workers=4):
     if os.path.isdir(input_path):
@@ -365,9 +423,20 @@ if __name__ == "__main__":
     parser.add_argument("--output", type=str, default="Results/Test run", help="Output directory")
     parser.add_argument("--save-qc", action="store_true", help="Save QC overlays during batch inference")
     parser.add_argument("--max-workers", type=int, default=4, help="Maximum number of CPU workers for parallel batch inference")
+    parser.add_argument("--plot-only", action="store_true", help="Do not run inference; only re-parse tecan file and replot existing results")
     args = parser.parse_args()
     
-    if not os.path.exists(args.model):
-        print(f"Cannot find {args.model}. Make sure you run train.py first!")
+    dtt_path = args.dtt
+    if dtt_path and not os.path.exists(dtt_path):
+        if os.path.exists(dtt_path + ".dtt"):
+            dtt_path += ".dtt"
+        elif os.path.exists(dtt_path + ".xml"):
+            dtt_path += ".xml"
+            
+    if args.plot_only:
+        replot_only(args.output, dtt_path)
     else:
-        run_inference(args.model, args.input, threshold=args.threshold, output_dir=args.output, dtt_path=args.dtt, save_qc=args.save_qc, max_workers=args.max_workers)
+        if not os.path.exists(args.model):
+            print(f"Cannot find {args.model}. Make sure you run train.py first!")
+        else:
+            run_inference(args.model, args.input, threshold=args.threshold, output_dir=args.output, dtt_path=dtt_path, save_qc=args.save_qc, max_workers=args.max_workers)
