@@ -109,15 +109,15 @@ def _get_worker_session(onnx_path):
 
 def process_single_file(file_path, session, input_name, threshold, output_dir, save_qc, treatments):
     basename = os.path.basename(file_path)
-    pattern = re.compile(r't(\d{3})([A-H]\d{2})f(\d{2})d(\d)')
+    pattern = re.compile(r'(?:t(\d{3}))?([A-H]\d{2})f(\d{2})d(\d)', re.IGNORECASE)
     match = pattern.search(basename)
     if not match:
         return None
         
     time_str, well, field, channel = match.groups()
-    if channel != '1':
+    if channel != '0':
         return None
-    time_idx = int(time_str)
+    time_idx = int(time_str) if time_str else 0
     
     img = load_as_float(file_path)
     if img is None:
@@ -169,6 +169,7 @@ def process_single_file(file_path, session, input_name, threshold, output_dir, s
     print(f"Processed {basename} - Count: {num_cells}")
     return {
         'File': basename,
+        'FilePath': file_path,
         'Well': well,
         'Field': field,
         'Time': time_idx,
@@ -409,6 +410,7 @@ def run_batch_inference(onnx_path, input_dir, threshold=0.5, output_dir="results
 
     search_pattern = os.path.join(input_dir, "**", "*.[tT][iI][fF]*")
     all_files = glob.glob(search_pattern, recursive=True)
+    print(f"Found {len(all_files)} TIFF files under {input_dir}")
     
     results = []
 
@@ -432,37 +434,60 @@ def run_batch_inference(onnx_path, input_dir, threshold=0.5, output_dir="results
         print("No valid brightfield images found or processed.")
         return
         
-    df = pd.DataFrame(results)
-    has_time = df['Time'].notnull().any()
-    
-    if not has_time:
-        well_counts = df.groupby(['Well', 'Treatment'])['Count'].sum().reset_index()
-        out_xlsx = os.path.join(output_dir, "per_well_counts.xlsx")
-        well_counts.to_excel(out_xlsx, index=False)
-        print(f"\nSaved per well counts to {out_xlsx} (no time indication detected).")
-    else:
-        df['Time'] = df['Time'].fillna(0)
-        out_xlsx = os.path.join(output_dir, "counts_per_timepoint.xlsx")
-        with pd.ExcelWriter(out_xlsx) as writer:
-            for t, group in df.groupby('Time'):
-                t_well_counts = group.groupby(['Well', 'Treatment'])['Count'].sum().reset_index()
-                t_well_counts.to_excel(writer, sheet_name=f'Time_{int(t)}', index=False)
-        print(f"\nSaved per-timepoint sheets to {out_xlsx}.")
-        
-        well_time_counts = df.groupby(['Time', 'Well', 'Treatment'])['Count'].sum().reset_index()
+    results_by_subfolder = {}
+    for result in results:
+        rel_dir = os.path.relpath(os.path.dirname(result['FilePath']), input_dir)
+        if rel_dir == '.':
+            rel_dir = 'root'
+        results_by_subfolder.setdefault(rel_dir, []).append(result)
+
+    def sanitize_sheet_name(name):
+        invalid_chars = r'[\\\/?*\[\]]'
+        safe_name = re.sub(invalid_chars, '_', name)
+        if len(safe_name) > 31:
+            safe_name = safe_name[:31]
+        return safe_name
+
+    subfolder_workbook = os.path.join(output_dir, "per_well_counts_by_subfolder.xlsx")
+    sheet_names = {}
+    with pd.ExcelWriter(subfolder_workbook) as writer:
+        for rel_dir, group in results_by_subfolder.items():
+            df_group = pd.DataFrame(group)
+            per_well = df_group.groupby(['Well', 'Treatment'])['Count'].sum().reset_index()
+
+            sheet_name = sanitize_sheet_name(rel_dir)
+            if sheet_name in sheet_names:
+                sheet_name = f"{sheet_name[:24]}_{sheet_names[sheet_name] + 1}"
+                sheet_name = sanitize_sheet_name(sheet_name)
+                sheet_names[sheet_name] = 1
+            else:
+                sheet_names[sheet_name] = 1
+
+            per_well.to_excel(writer, sheet_name=sheet_name, index=False)
+            print(f"Saved per-well counts for '{rel_dir}' as sheet '{sheet_name}' in {subfolder_workbook}.")
+
+    combined_out_xlsx = os.path.join(output_dir, "per_well_counts_all_subfolders.xlsx")
+    combined_df = pd.DataFrame(results)
+    combined_per_well = combined_df.groupby(['Well', 'Treatment'])['Count'].sum().reset_index()
+    combined_per_well.to_excel(combined_out_xlsx, index=False)
+    print(f"Saved combined per-well counts to {combined_out_xlsx}.")
+
+    if combined_df['Time'].notnull().any():
+        combined_df['Time'] = combined_df['Time'].fillna(0)
+        well_time_counts = combined_df.groupby(['Time', 'Well', 'Treatment'])['Count'].sum().reset_index()
         generate_plots(well_time_counts, output_dir)
 
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Run cell counter inference")
     parser.add_argument("--model", type=str, default="Vandria_cell_counter_model_All.onnx", help="Path to ONNX model")
-    parser.add_argument("--input", type=str, default="./Data test run/localhost260602100003", help="Path to image file or directory")
+    parser.add_argument("--input", type=str, default="./RHO192", help="Path to image file or directory")
     parser.add_argument("--dtt", type=str, default="./Tecan files/2026-06-02_VNA _p3_RHO182.tdd", help="Path to Tecan D300e .dtt file")
     parser.add_argument("--threshold", type=float, default=0.5, help="Detection threshold")
-    parser.add_argument("--output", type=str, default="Results/Test run", help="Output directory")
-    parser.add_argument("--save-qc", action="store_true", help="Save QC overlays during batch inference")
-    parser.add_argument("--max-workers", type=int, default=4, help="Maximum number of CPU workers for parallel batch inference")
-    parser.add_argument("--plot-only", default=True, action="store_true", help="Do not run inference; only re-parse tecan file and replot existing results")
+    parser.add_argument("--output", type=str, default="Results/RHO192", help="Output directory")
+    parser.add_argument("--save-qc", default=True, action="store_true", help="Save QC overlays during batch inference")
+    parser.add_argument("--max-workers", type=int, default=12, help="Maximum number of CPU workers for parallel batch inference")
+    parser.add_argument("--plot-only", default=False, action="store_true", help="Do not run inference; only re-parse tecan file and replot existing results")
     args = parser.parse_args()
     
     dtt_path = args.dtt
