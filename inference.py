@@ -298,16 +298,17 @@ def run_inference(onnx_path, input_path, threshold=0.5, output_dir="results", dt
 def run_single_inference(onnx_path, image_path, threshold=0.5, output_dir="results"):
     print(f"Running inference on: {image_path}")
     
-    # Load the ONNX model with DirectML
-    providers = ['DmlExecutionProvider', 'CPUExecutionProvider']
+    # Prefer NVIDIA CUDA, then DirectML (Intel/AMD), then CPU.
+    # onnxruntime silently skips any provider that isn't installed.
+    providers = ['CUDAExecutionProvider', 'DmlExecutionProvider', 'CPUExecutionProvider']
     session = ort.InferenceSession(onnx_path, providers=providers)
-    
+
     active_provider = session.get_providers()[0]
-    if active_provider == 'DmlExecutionProvider':
-        print("Successfully loaded model onto GPU via DirectML.")
+    if active_provider in ('CUDAExecutionProvider', 'DmlExecutionProvider'):
+        print(f"Successfully loaded model onto GPU via {active_provider}.")
     else:
-        print(f"Warning: DirectML failed to load. Falling back to {active_provider}.")
-        
+        print(f"Warning: no GPU provider available. Running on {active_provider}.")
+
     input_name = session.get_inputs()[0].name
 
     # Load and preprocess image
@@ -391,15 +392,15 @@ def run_single_inference(onnx_path, image_path, threshold=0.5, output_dir="resul
 def run_batch_inference(onnx_path, input_dir, threshold=0.5, output_dir="results", dtt_path=None, save_qc=False, max_workers=4):
     print(f"Running batch inference on directory: {input_dir}")
     
-    providers = ['DmlExecutionProvider', 'CPUExecutionProvider']
+    providers = ['CUDAExecutionProvider', 'DmlExecutionProvider', 'CPUExecutionProvider']
     session = ort.InferenceSession(onnx_path, providers=providers)
     active_provider = session.get_providers()[0]
-    
-    is_cpu = active_provider != 'DmlExecutionProvider'
+
+    is_cpu = active_provider not in ('CUDAExecutionProvider', 'DmlExecutionProvider')
     if not is_cpu:
-        print("Successfully loaded model onto GPU via DirectML.")
+        print(f"Successfully loaded model onto GPU via {active_provider}.")
     else:
-        print(f"Warning: DirectML failed to load. Falling back to {active_provider}.")
+        print(f"Warning: no GPU provider available. Running on {active_provider}.")
         
     input_name = session.get_inputs()[0].name
 
