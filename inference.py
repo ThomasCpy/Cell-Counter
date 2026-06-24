@@ -392,10 +392,21 @@ def run_torch_batch_pipeline(backend, all_files, threshold, output_dir, treatmen
     print(f"Processing {len(items)} brightfield images on GPU "
           f"(batch_size={batch_size}, loaders={num_loaders}, ~{len(qc_set)} QC overlays)...")
 
+    try:
+        from tqdm import tqdm
+    except ImportError:  # progress bar is optional
+        def tqdm(*a, **k):
+            class _Noop:
+                def update(self, n=1): pass
+                def set_postfix_str(self, s): pass
+                def close(self): pass
+            return _Noop()
+
     qc_dir = os.path.join(output_dir, "QC")
     results = []
     post_ex = concurrent.futures.ThreadPoolExecutor(max_workers=num_loaders)
     post_futures = []
+    pbar = tqdm(total=len(items), unit="img", desc="Inference")
 
     def load_raw(item):
         img = load_as_float(item[0])
@@ -419,6 +430,8 @@ def run_torch_batch_pipeline(backend, all_files, threshold, output_dir, treatmen
         probs, zscored = backend.process_batch([b[1] for b in batch])
         for i, (item, _) in enumerate(batch):
             post_futures.append(post_ex.submit(postprocess, item, probs[i], zscored[i]))
+        pbar.update(len(batch))
+        pbar.set_postfix_str(f"well {batch[-1][0][2]}")  # most recently processed well
 
     # 3. Bounded-prefetch loader feeding shape-grouped GPU batches.
     loader_ex = concurrent.futures.ThreadPoolExecutor(max_workers=num_loaders)
@@ -448,16 +461,17 @@ def run_torch_batch_pipeline(backend, all_files, threshold, output_dir, treatmen
 
     for bucket in buckets.values():
         flush(bucket)
+    pbar.close()
     loader_ex.shutdown()
 
-    # 4. Collect post-processing results.
+    # 4. Drain the post-processing (peak detection + sampled QC overlays).
     for f in concurrent.futures.as_completed(post_futures):
         r = f.result()
         if r is not None:
             results.append(r)
     post_ex.shutdown()
 
-    print(f"Processed {len(results)} images.")
+    print(f"Processed {len(results)} images across {len(wells)} wells.")
     return results
 
 def generate_plots(well_time_counts, output_dir):
