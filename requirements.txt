@@ -7,3 +7,5 @@ tensorboard
 onnxruntime-gpu
 matplotlib
 pytest
+tqdm
+openpyxl
