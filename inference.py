@@ -6,13 +6,18 @@ import numpy as np
 import pandas as pd
 import xml.etree.ElementTree as ET
 from collections import defaultdict
+import random
 import onnxruntime as ort
 import scipy.ndimage as ndi
+import matplotlib
+matplotlib.use("Agg")  # headless; required for rendering QC overlays off the main thread
 import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
 import seaborn as sns
 from dataset import load_as_float
 from skimage.feature import peak_local_max
 import concurrent.futures
+from collections import deque
 
 def pad_to_multiple(img, multiple=8):
     """Pad image dimensions to a specified multiple."""
@@ -190,12 +195,95 @@ def _pth_path_for(model_path):
     return model_path
 
 
+class TorchBackend:
+    """PyTorch UNet backend. Supports single-image predict() and a batched,
+    fully-on-GPU process_batch() used by the high-throughput pipeline."""
+
+    def __init__(self, pth_path):
+        import torch
+        import torch.nn.functional as F
+        from model import UNet
+
+        self.torch = torch
+        self.F = F
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.is_gpu = self.device.type == "cuda"
+        self.name = f"PyTorch ({self.device.type})"
+
+        # Fields are all the same size, so let cuDNN pick the fastest conv algo.
+        torch.backends.cudnn.benchmark = True
+
+        model = UNet(n_channels=1, n_classes=1)
+        model.load_state_dict(torch.load(pth_path, map_location=self.device))
+        model.eval().to(self.device)
+        self.model = model
+        self._gauss_kernels = {}
+
+    def predict(self, input_tensor):
+        """Single (1, 1, H, W) float32 array -> 2D logits array (legacy path)."""
+        with self.torch.no_grad():
+            t = self.torch.from_numpy(input_tensor).to(self.device)
+            out = self.model(t)
+        return out[0, 0].detach().cpu().numpy()
+
+    def gaussian_blur(self, t, sigma=50.0, truncate=4.0):
+        """Separable Gaussian, numerically identical to
+        scipy.ndimage.gaussian_filter(mode='reflect'). t is (N, 1, H, W)."""
+        torch, F = self.torch, self.F
+        radius = int(truncate * sigma + 0.5)
+        k = self._gauss_kernels.get(sigma)
+        if k is None:
+            x = torch.arange(-radius, radius + 1, dtype=torch.float32, device=self.device)
+            k = torch.exp(-0.5 * (x / sigma) ** 2)
+            k = k / k.sum()
+            self._gauss_kernels[sigma] = k
+
+        def sym_pad(x, pad, dim):  # scipy 'reflect' == edge-repeated symmetric
+            left = x.narrow(dim, 0, pad).flip(dim)
+            right = x.narrow(dim, x.size(dim) - pad, pad).flip(dim)
+            return torch.cat([left, x, right], dim=dim)
+
+        t = F.conv2d(sym_pad(t, radius, 3), k.view(1, 1, 1, -1))
+        t = F.conv2d(sym_pad(t, radius, 2), k.view(1, 1, -1, 1))
+        return t
+
+    def process_batch(self, raw_imgs):
+        """raw_imgs: list of equal-shape (H, W) float32 arrays.
+        Returns (probs, zscored) numpy arrays of shape (N, H, W), matching the
+        per-image preprocessing of the original CPU path."""
+        torch, F = self.torch, self.F
+        with torch.no_grad():
+            t = torch.from_numpy(np.stack(raw_imgs)[:, None]).to(self.device)  # (N,1,H,W)
+
+            # Pseudo-flatfield background subtraction
+            t = t - self.gaussian_blur(t, sigma=50.0)
+
+            # Safe per-image z-score
+            flat = t.flatten(1)
+            mean = flat.mean(dim=1).view(-1, 1, 1, 1)
+            std = flat.std(dim=1, unbiased=False).view(-1, 1, 1, 1).clamp_min(1e-2)
+            t = (t - mean) / std
+            zscored = t[:, 0].detach().to("cpu").numpy()
+
+            # Pad to multiple of 8, run, crop back, sigmoid
+            H, W = t.shape[2], t.shape[3]
+            pad_h, pad_w = (8 - H % 8) % 8, (8 - W % 8) % 8
+            if pad_h or pad_w:
+                t = F.pad(t, (0, pad_w, 0, pad_h), mode="reflect")
+            probs = torch.sigmoid(self.model(t))[:, 0, :H, :W]
+            probs = probs.detach().to("cpu").numpy()
+
+        return probs, zscored
+
+
 def create_predictor(model_path, backend="auto"):
     """
     Build an inference backend.
 
-    Returns (predict, backend_name, is_gpu) where predict(input_tensor) takes a
-    (1, 1, H, W) float32 array and returns a 2D logits array.
+    Returns (predict, backend_name, is_gpu, torch_backend) where
+    predict(input_tensor) takes a (1, 1, H, W) float32 array and returns a 2D
+    logits array, and torch_backend is a TorchBackend (for the batched GPU
+    pipeline) or None when running on onnxruntime.
 
     backend:
       - "torch": load the .pth UNet with PyTorch (uses CUDA if available).
@@ -210,27 +298,12 @@ def create_predictor(model_path, backend="auto"):
         use_torch = os.path.exists(pth_path) and _torch_cuda_available()
 
     if use_torch:
-        import torch
-        from model import UNet
-
         if not os.path.exists(pth_path):
             raise FileNotFoundError(
                 f"Torch backend requested but weights '{pth_path}' were not found."
             )
-
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        model = UNet(n_channels=1, n_classes=1)
-        model.load_state_dict(torch.load(pth_path, map_location=device))
-        model.eval().to(device)
-
-        def predict(input_tensor):
-            with torch.no_grad():
-                t = torch.from_numpy(input_tensor).to(device)
-                out = model(t)
-            return out[0, 0].detach().cpu().numpy()
-
-        is_gpu = device.type == "cuda"
-        return predict, f"PyTorch ({device.type})", is_gpu
+        tb = TorchBackend(pth_path)
+        return tb.predict, tb.name, tb.is_gpu, tb
 
     # onnxruntime backend
     providers = ['CUDAExecutionProvider', 'DmlExecutionProvider', 'CPUExecutionProvider']
@@ -242,7 +315,7 @@ def create_predictor(model_path, backend="auto"):
         return session.run(None, {input_name: input_tensor})[0][0, 0]
 
     is_gpu = active_provider in ('CUDAExecutionProvider', 'DmlExecutionProvider')
-    return predict, f"ONNX ({active_provider})", is_gpu
+    return predict, f"ONNX ({active_provider})", is_gpu, None
 
 
 def _torch_cuda_available():
@@ -251,6 +324,141 @@ def _torch_cuda_available():
         return torch.cuda.is_available()
     except Exception:
         return False
+
+
+def _save_qc_overlay(qc_dir, basename, img, probs, coords, num_cells):
+    """Render the 3-panel QC overlay. Uses the Figure API (no pyplot global
+    state) so it is safe to call from worker threads."""
+    name, _ = os.path.splitext(basename)
+    fig = Figure(figsize=(16, 6))
+    ax = fig.subplots(1, 3)
+
+    ax[0].imshow(img, cmap='gray')
+    ax[0].set_title("Original Brightfield")
+    ax[0].axis('off')
+
+    ax[1].imshow(probs, cmap='viridis')
+    ax[1].set_title("Model Output (Probabilities)")
+    ax[1].axis('off')
+
+    ax[2].imshow(img, cmap='gray')
+    if num_cells > 0:
+        ax[2].plot(coords[:, 1], coords[:, 0], 'r.', markersize=6)
+    ax[2].set_title(f"Detections (Count: {num_cells})")
+    ax[2].axis('off')
+
+    fig.tight_layout()
+    fig.savefig(os.path.join(qc_dir, f"{name}_overlay.png"), bbox_inches='tight')
+
+
+_FNAME_RE = re.compile(r'(?:t(\d{3}))?([A-H]\d{2})f(\d{2})d(\d)', re.IGNORECASE)
+
+
+def _parse_brightfield(file_path):
+    """Return (well, field, time_idx) for a d0 brightfield file, else None."""
+    match = _FNAME_RE.search(os.path.basename(file_path))
+    if not match:
+        return None
+    time_str, well, field, channel = match.groups()
+    if channel != '0':
+        return None
+    return well, field, int(time_str) if time_str else 0
+
+
+def run_torch_batch_pipeline(backend, all_files, threshold, output_dir, treatments,
+                             qc_per_well=3, batch_size=8, num_loaders=12):
+    """High-throughput GPU pipeline: threaded disk loading overlapped with
+    batched, fully-on-GPU preprocessing + inference, and threaded
+    post-processing (peak detection + sampled QC overlays)."""
+    # 1. Identify valid brightfield files and group by well.
+    items = []  # (file_path, basename, well, field, time_idx)
+    wells = defaultdict(list)
+    for fp in all_files:
+        parsed = _parse_brightfield(fp)
+        if parsed is None:
+            continue
+        well, field, time_idx = parsed
+        items.append((fp, os.path.basename(fp), well, field, time_idx))
+        wells[well].append(fp)
+
+    # 2. Pick a random sample of fields per well to render QC overlays for.
+    qc_set = set()
+    if qc_per_well and qc_per_well > 0:
+        rng = random.Random(0)
+        for well, fps in wells.items():
+            qc_set.update(rng.sample(fps, min(qc_per_well, len(fps))))
+        os.makedirs(os.path.join(output_dir, "QC"), exist_ok=True)
+
+    print(f"Processing {len(items)} brightfield images on GPU "
+          f"(batch_size={batch_size}, loaders={num_loaders}, ~{len(qc_set)} QC overlays)...")
+
+    qc_dir = os.path.join(output_dir, "QC")
+    results = []
+    post_ex = concurrent.futures.ThreadPoolExecutor(max_workers=num_loaders)
+    post_futures = []
+
+    def load_raw(item):
+        img = load_as_float(item[0])
+        if img is None:
+            return None
+        return item, np.ascontiguousarray(img, dtype=np.float32)
+
+    def postprocess(item, probs, zscored):
+        fp, basename, well, field, time_idx = item
+        coords = peak_local_max(probs, min_distance=5, threshold_abs=threshold)
+        num_cells = len(coords)
+        if fp in qc_set:
+            _save_qc_overlay(qc_dir, basename, zscored, probs, coords, num_cells)
+        treatment = treatments.get(well, "Unknown") if treatments else "Unknown"
+        return {'File': basename, 'FilePath': fp, 'Well': well, 'Field': field,
+                'Time': time_idx, 'Treatment': treatment, 'Count': num_cells}
+
+    def flush(batch):
+        if not batch:
+            return
+        probs, zscored = backend.process_batch([b[1] for b in batch])
+        for i, (item, _) in enumerate(batch):
+            post_futures.append(post_ex.submit(postprocess, item, probs[i], zscored[i]))
+
+    # 3. Bounded-prefetch loader feeding shape-grouped GPU batches.
+    loader_ex = concurrent.futures.ThreadPoolExecutor(max_workers=num_loaders)
+    it = iter(items)
+    inflight = deque()
+    prefetch = num_loaders * 2 + batch_size
+    for _ in range(prefetch):
+        nxt = next(it, None)
+        if nxt is None:
+            break
+        inflight.append(loader_ex.submit(load_raw, nxt))
+
+    buckets = defaultdict(list)  # shape -> list of (item, raw_img)
+    while inflight:
+        loaded = inflight.popleft().result()
+        nxt = next(it, None)
+        if nxt is not None:
+            inflight.append(loader_ex.submit(load_raw, nxt))
+        if loaded is None:
+            continue
+        item, raw = loaded
+        bucket = buckets[raw.shape]
+        bucket.append((item, raw))
+        if len(bucket) >= batch_size:
+            flush(bucket)
+            buckets[raw.shape] = []
+
+    for bucket in buckets.values():
+        flush(bucket)
+    loader_ex.shutdown()
+
+    # 4. Collect post-processing results.
+    for f in concurrent.futures.as_completed(post_futures):
+        r = f.result()
+        if r is not None:
+            results.append(r)
+    post_ex.shutdown()
+
+    print(f"Processed {len(results)} images.")
+    return results
 
 def generate_plots(well_time_counts, output_dir):
     # 1. Original Plot (Aggregated by Treatment)
@@ -359,16 +567,16 @@ def replot_only(output_dir, dtt_path):
     else:
         print(f"No existing Excel files found in {output_dir} to replot.")
 
-def run_inference(onnx_path, input_path, threshold=0.5, output_dir="results", dtt_path=None, save_qc=False, max_workers=4, backend="auto"):
+def run_inference(onnx_path, input_path, threshold=0.5, output_dir="results", dtt_path=None, save_qc=False, max_workers=4, backend="auto", qc_per_well=3, batch_size=8):
     if os.path.isdir(input_path):
-        run_batch_inference(onnx_path, input_path, threshold, output_dir, dtt_path, save_qc, max_workers, backend)
+        run_batch_inference(onnx_path, input_path, threshold, output_dir, dtt_path, save_qc, max_workers, backend, qc_per_well, batch_size)
     else:
         run_single_inference(onnx_path, input_path, threshold, output_dir, backend)
 
 def run_single_inference(onnx_path, image_path, threshold=0.5, output_dir="results", backend="auto"):
     print(f"Running inference on: {image_path}")
 
-    predict, backend_name, is_gpu = create_predictor(onnx_path, backend)
+    predict, backend_name, is_gpu, _ = create_predictor(onnx_path, backend)
     if is_gpu:
         print(f"Successfully loaded model onto GPU via {backend_name}.")
     else:
@@ -451,17 +659,17 @@ def run_single_inference(onnx_path, image_path, threshold=0.5, output_dir="resul
         writer.writerow([base_name, num_cells])
     print(f"Appended count to {csv_path}\n")
 
-def run_batch_inference(onnx_path, input_dir, threshold=0.5, output_dir="results", dtt_path=None, save_qc=False, max_workers=4, backend="auto"):
+def run_batch_inference(onnx_path, input_dir, threshold=0.5, output_dir="results", dtt_path=None, save_qc=False, max_workers=4, backend="auto", qc_per_well=3, batch_size=8):
     print(f"Running batch inference on directory: {input_dir}")
 
-    predict, backend_name, is_gpu = create_predictor(onnx_path, backend)
+    predict, backend_name, is_gpu, torch_backend = create_predictor(onnx_path, backend)
     if is_gpu:
         print(f"Successfully loaded model onto GPU via {backend_name}.")
     else:
         print(f"Warning: no GPU backend available. Running on {backend_name}.")
 
-    # CPU onnxruntime parallelises across processes; GPU backends run serially.
-    is_cpu = (not is_gpu) and backend_name.startswith("ONNX")
+    # onnxruntime CPU parallelises across processes; the onnx GPU path runs serially.
+    is_cpu = (torch_backend is None) and (not is_gpu)
 
     treatments = {}
     if dtt_path and os.path.exists(dtt_path):
@@ -471,12 +679,16 @@ def run_batch_inference(onnx_path, input_dir, threshold=0.5, output_dir="results
     search_pattern = os.path.join(input_dir, "**", "*.[tT][iI][fF]*")
     all_files = glob.glob(search_pattern, recursive=True)
     print(f"Found {len(all_files)} TIFF files under {input_dir}")
-    
+
     results = []
 
     os.makedirs(output_dir, exist_ok=True)
 
-    if is_cpu:
+    if torch_backend is not None:
+        results = run_torch_batch_pipeline(
+            torch_backend, all_files, threshold, output_dir, treatments,
+            qc_per_well=qc_per_well, batch_size=batch_size, num_loaders=max_workers)
+    elif is_cpu:
         workers = min(os.cpu_count() or 1, max_workers)
         print(f"Using ProcessPoolExecutor with {workers} workers to balance speed and memory usage...")
         args_list = [(f, onnx_path, threshold, output_dir, save_qc, treatments) for f in all_files]
@@ -545,8 +757,10 @@ if __name__ == "__main__":
     parser.add_argument("--dtt", type=str, default="./Tecan files/2026-06-02_VNA _p3_RHO182.tdd", help="Path to Tecan D300e .dtt file")
     parser.add_argument("--threshold", type=float, default=0.5, help="Detection threshold")
     parser.add_argument("--output", type=str, default="Results/RHO192", help="Output directory")
-    parser.add_argument("--save-qc", default=False, action="store_true", help="Save QC overlays during batch inference")
-    parser.add_argument("--max-workers", type=int, default=12, help="Maximum number of CPU workers for parallel batch inference")
+    parser.add_argument("--save-qc", default=False, action="store_true", help="onnx/CPU path only: save a QC overlay for every field")
+    parser.add_argument("--qc-per-well", type=int, default=3, help="GPU/torch path: number of randomly sampled fields per well to save QC overlays for (0 disables)")
+    parser.add_argument("--batch-size", type=int, default=8, help="GPU/torch path: images per forward pass")
+    parser.add_argument("--max-workers", type=int, default=12, help="CPU workers: process pool size (onnx path) or loader/post-processing threads (GPU path)")
     parser.add_argument("--backend", type=str, default="auto", choices=["auto", "torch", "onnx"],
                         help="Inference backend. 'auto' uses PyTorch+CUDA when a .pth and GPU are available, else onnxruntime.")
     parser.add_argument("--plot-only", default=False, action="store_true", help="Do not run inference; only re-parse tecan file and replot existing results")
@@ -565,4 +779,4 @@ if __name__ == "__main__":
         if not os.path.exists(args.model):
             print(f"Cannot find {args.model}. Make sure you run train.py first!")
         else:
-            run_inference(args.model, args.input, threshold=args.threshold, output_dir=args.output, dtt_path=dtt_path, save_qc=args.save_qc, max_workers=args.max_workers, backend=args.backend)
+            run_inference(args.model, args.input, threshold=args.threshold, output_dir=args.output, dtt_path=dtt_path, save_qc=args.save_qc, max_workers=args.max_workers, backend=args.backend, qc_per_well=args.qc_per_well, batch_size=args.batch_size)
