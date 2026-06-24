@@ -107,7 +107,7 @@ def _get_worker_session(onnx_path):
         _worker_input_name = _worker_session.get_inputs()[0].name
     return _worker_session, _worker_input_name
 
-def process_single_file(file_path, session, input_name, threshold, output_dir, save_qc, treatments):
+def process_single_file(file_path, predict, threshold, output_dir, save_qc, treatments):
     basename = os.path.basename(file_path)
     pattern = re.compile(r'(?:t(\d{3}))?([A-H]\d{2})f(\d{2})d(\d)', re.IGNORECASE)
     match = pattern.search(basename)
@@ -131,10 +131,9 @@ def process_single_file(file_path, session, input_name, threshold, output_dir, s
     padded_img, orig_h, orig_w = pad_to_multiple(img, multiple=8)
     input_tensor = np.expand_dims(padded_img, axis=(0, 1)).astype(np.float32)
 
-    outputs = session.run(None, {input_name: input_tensor})
-    logits = outputs[0][0, 0]
+    logits = predict(input_tensor)
     logits = logits[:orig_h, :orig_w]
-    
+
     probs = 1.0 / (1.0 + np.exp(-logits))
     coords = peak_local_max(probs, min_distance=5, threshold_abs=threshold)
     num_cells = len(coords)
@@ -180,7 +179,78 @@ def process_single_file(file_path, session, input_name, threshold, output_dir, s
 def process_file_worker(args):
     file_path, onnx_path, threshold, output_dir, save_qc, treatments = args
     session, input_name = _get_worker_session(onnx_path)
-    return process_single_file(file_path, session, input_name, threshold, output_dir, save_qc, treatments)
+    predict = lambda t: session.run(None, {input_name: t})[0][0, 0]
+    return process_single_file(file_path, predict, threshold, output_dir, save_qc, treatments)
+
+
+def _pth_path_for(model_path):
+    """Derive the sibling .pth weights path from a model argument."""
+    if model_path.lower().endswith(".onnx"):
+        return model_path[:-len(".onnx")] + ".pth"
+    return model_path
+
+
+def create_predictor(model_path, backend="auto"):
+    """
+    Build an inference backend.
+
+    Returns (predict, backend_name, is_gpu) where predict(input_tensor) takes a
+    (1, 1, H, W) float32 array and returns a 2D logits array.
+
+    backend:
+      - "torch": load the .pth UNet with PyTorch (uses CUDA if available).
+      - "onnx":  load the .onnx model with onnxruntime (CUDA > DirectML > CPU).
+      - "auto":  use Torch+CUDA when a .pth and a CUDA GPU are both available,
+                 otherwise fall back to onnxruntime.
+    """
+    pth_path = _pth_path_for(model_path)
+
+    use_torch = backend == "torch"
+    if backend == "auto":
+        use_torch = os.path.exists(pth_path) and _torch_cuda_available()
+
+    if use_torch:
+        import torch
+        from model import UNet
+
+        if not os.path.exists(pth_path):
+            raise FileNotFoundError(
+                f"Torch backend requested but weights '{pth_path}' were not found."
+            )
+
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model = UNet(n_channels=1, n_classes=1)
+        model.load_state_dict(torch.load(pth_path, map_location=device))
+        model.eval().to(device)
+
+        def predict(input_tensor):
+            with torch.no_grad():
+                t = torch.from_numpy(input_tensor).to(device)
+                out = model(t)
+            return out[0, 0].detach().cpu().numpy()
+
+        is_gpu = device.type == "cuda"
+        return predict, f"PyTorch ({device.type})", is_gpu
+
+    # onnxruntime backend
+    providers = ['CUDAExecutionProvider', 'DmlExecutionProvider', 'CPUExecutionProvider']
+    session = ort.InferenceSession(model_path, providers=providers)
+    active_provider = session.get_providers()[0]
+    input_name = session.get_inputs()[0].name
+
+    def predict(input_tensor):
+        return session.run(None, {input_name: input_tensor})[0][0, 0]
+
+    is_gpu = active_provider in ('CUDAExecutionProvider', 'DmlExecutionProvider')
+    return predict, f"ONNX ({active_provider})", is_gpu
+
+
+def _torch_cuda_available():
+    try:
+        import torch
+        return torch.cuda.is_available()
+    except Exception:
+        return False
 
 def generate_plots(well_time_counts, output_dir):
     # 1. Original Plot (Aggregated by Treatment)
@@ -289,27 +359,20 @@ def replot_only(output_dir, dtt_path):
     else:
         print(f"No existing Excel files found in {output_dir} to replot.")
 
-def run_inference(onnx_path, input_path, threshold=0.5, output_dir="results", dtt_path=None, save_qc=False, max_workers=4):
+def run_inference(onnx_path, input_path, threshold=0.5, output_dir="results", dtt_path=None, save_qc=False, max_workers=4, backend="auto"):
     if os.path.isdir(input_path):
-        run_batch_inference(onnx_path, input_path, threshold, output_dir, dtt_path, save_qc, max_workers)
+        run_batch_inference(onnx_path, input_path, threshold, output_dir, dtt_path, save_qc, max_workers, backend)
     else:
-        run_single_inference(onnx_path, input_path, threshold, output_dir)
+        run_single_inference(onnx_path, input_path, threshold, output_dir, backend)
 
-def run_single_inference(onnx_path, image_path, threshold=0.5, output_dir="results"):
+def run_single_inference(onnx_path, image_path, threshold=0.5, output_dir="results", backend="auto"):
     print(f"Running inference on: {image_path}")
-    
-    # Prefer NVIDIA CUDA, then DirectML (Intel/AMD), then CPU.
-    # onnxruntime silently skips any provider that isn't installed.
-    providers = ['CUDAExecutionProvider', 'DmlExecutionProvider', 'CPUExecutionProvider']
-    session = ort.InferenceSession(onnx_path, providers=providers)
 
-    active_provider = session.get_providers()[0]
-    if active_provider in ('CUDAExecutionProvider', 'DmlExecutionProvider'):
-        print(f"Successfully loaded model onto GPU via {active_provider}.")
+    predict, backend_name, is_gpu = create_predictor(onnx_path, backend)
+    if is_gpu:
+        print(f"Successfully loaded model onto GPU via {backend_name}.")
     else:
-        print(f"Warning: no GPU provider available. Running on {active_provider}.")
-
-    input_name = session.get_inputs()[0].name
+        print(f"Warning: no GPU backend available. Running on {backend_name}.")
 
     # Load and preprocess image
     img = load_as_float(image_path)
@@ -333,8 +396,7 @@ def run_single_inference(onnx_path, image_path, threshold=0.5, output_dir="resul
     input_tensor = np.expand_dims(padded_img, axis=(0, 1)).astype(np.float32)
 
     # Execute model
-    outputs = session.run(None, {input_name: input_tensor})
-    logits = outputs[0][0, 0]
+    logits = predict(input_tensor)
 
     # Restore original image dimensions
     logits = logits[:orig_h, :orig_w]
@@ -389,20 +451,17 @@ def run_single_inference(onnx_path, image_path, threshold=0.5, output_dir="resul
         writer.writerow([base_name, num_cells])
     print(f"Appended count to {csv_path}\n")
 
-def run_batch_inference(onnx_path, input_dir, threshold=0.5, output_dir="results", dtt_path=None, save_qc=False, max_workers=4):
+def run_batch_inference(onnx_path, input_dir, threshold=0.5, output_dir="results", dtt_path=None, save_qc=False, max_workers=4, backend="auto"):
     print(f"Running batch inference on directory: {input_dir}")
-    
-    providers = ['CUDAExecutionProvider', 'DmlExecutionProvider', 'CPUExecutionProvider']
-    session = ort.InferenceSession(onnx_path, providers=providers)
-    active_provider = session.get_providers()[0]
 
-    is_cpu = active_provider not in ('CUDAExecutionProvider', 'DmlExecutionProvider')
-    if not is_cpu:
-        print(f"Successfully loaded model onto GPU via {active_provider}.")
+    predict, backend_name, is_gpu = create_predictor(onnx_path, backend)
+    if is_gpu:
+        print(f"Successfully loaded model onto GPU via {backend_name}.")
     else:
-        print(f"Warning: no GPU provider available. Running on {active_provider}.")
-        
-    input_name = session.get_inputs()[0].name
+        print(f"Warning: no GPU backend available. Running on {backend_name}.")
+
+    # CPU onnxruntime parallelises across processes; GPU backends run serially.
+    is_cpu = (not is_gpu) and backend_name.startswith("ONNX")
 
     treatments = {}
     if dtt_path and os.path.exists(dtt_path):
@@ -427,7 +486,7 @@ def run_batch_inference(onnx_path, input_dir, threshold=0.5, output_dir="results
                     results.append(result)
     else:
         for file_path in all_files:
-            result = process_single_file(file_path, session, input_name, threshold, output_dir, save_qc, treatments)
+            result = process_single_file(file_path, predict, threshold, output_dir, save_qc, treatments)
             if result is not None:
                 results.append(result)
 
@@ -488,6 +547,8 @@ if __name__ == "__main__":
     parser.add_argument("--output", type=str, default="Results/RHO192", help="Output directory")
     parser.add_argument("--save-qc", default=False, action="store_true", help="Save QC overlays during batch inference")
     parser.add_argument("--max-workers", type=int, default=12, help="Maximum number of CPU workers for parallel batch inference")
+    parser.add_argument("--backend", type=str, default="auto", choices=["auto", "torch", "onnx"],
+                        help="Inference backend. 'auto' uses PyTorch+CUDA when a .pth and GPU are available, else onnxruntime.")
     parser.add_argument("--plot-only", default=False, action="store_true", help="Do not run inference; only re-parse tecan file and replot existing results")
     args = parser.parse_args()
     
@@ -504,4 +565,4 @@ if __name__ == "__main__":
         if not os.path.exists(args.model):
             print(f"Cannot find {args.model}. Make sure you run train.py first!")
         else:
-            run_inference(args.model, args.input, threshold=args.threshold, output_dir=args.output, dtt_path=dtt_path, save_qc=args.save_qc, max_workers=args.max_workers)
+            run_inference(args.model, args.input, threshold=args.threshold, output_dir=args.output, dtt_path=dtt_path, save_qc=args.save_qc, max_workers=args.max_workers, backend=args.backend)
