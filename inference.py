@@ -486,7 +486,7 @@ if __name__ == "__main__":
     parser.add_argument("--dtt", type=str, default="./Tecan files/2026-06-02_VNA _p3_RHO182.tdd", help="Path to Tecan D300e .dtt file")
     parser.add_argument("--threshold", type=float, default=0.5, help="Detection threshold")
     parser.add_argument("--output", type=str, default="Results/RHO192", help="Output directory")
-    parser.add_argument("--save-qc", default=True, action="store_true", help="Save QC overlays during batch inference")
+    parser.add_argument("--save-qc", default=False, action="store_true", help="Save QC overlays during batch inference")
     parser.add_argument("--max-workers", type=int, default=12, help="Maximum number of CPU workers for parallel batch inference")
     parser.add_argument("--plot-only", default=False, action="store_true", help="Do not run inference; only re-parse tecan file and replot existing results")
     args = parser.parse_args()
