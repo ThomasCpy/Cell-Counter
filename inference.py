@@ -773,7 +773,7 @@ if __name__ == "__main__":
     parser.add_argument("--output", type=str, default="Results/RHO192", help="Output directory")
     parser.add_argument("--save-qc", default=False, action="store_true", help="onnx/CPU path only: save a QC overlay for every field")
     parser.add_argument("--qc-per-well", type=int, default=3, help="GPU/torch path: number of randomly sampled fields per well to save QC overlays for (0 disables)")
-    parser.add_argument("--batch-size", type=int, default=8, help="GPU/torch path: images per forward pass")
+    parser.add_argument("--batch-size", type=int, default=4, help="GPU/torch path: images per forward pass")
     parser.add_argument("--max-workers", type=int, default=12, help="CPU workers: process pool size (onnx path) or loader/post-processing threads (GPU path)")
     parser.add_argument("--backend", type=str, default="auto", choices=["auto", "torch", "onnx"],
                         help="Inference backend. 'auto' uses PyTorch+CUDA when a .pth and GPU are available, else onnxruntime.")
