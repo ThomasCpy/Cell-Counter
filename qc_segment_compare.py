@@ -9,6 +9,12 @@ Methods compared per tile:
   1. Baseline        - dataset.segment_nuclei (triangle + raw-EDT watershed)
   2. Improved        - smoothed EDT + intensity-weighted surface + h_maxima seeds
   3. StarDist        - pretrained '2D_versatile_fluo' (only if `stardist` is installed)
+  4. Cellpose        - pretrained 'nuclei' model (only if `cellpose` is installed)
+
+Cellpose is recommended over StarDist on Windows: it runs on the torch you already
+have (no TensorFlow), so it avoids the symlink-extraction step that raises
+WinError 1314 ("a required privilege is not held by the client").
+    Install:  CellCounter/Scripts/python.exe -m pip install cellpose
 
 Run:
     CellCounter/Scripts/python.exe qc_segment_compare.py
@@ -113,6 +119,39 @@ def segment_stardist(img):
     return labels, int(labels.max())
 
 
+# --------------------------- optional Cellpose -----------------------------
+_CELLPOSE = {"tried": False, "model": None, "major": None}
+
+
+def segment_cellpose(img):
+    """Returns (labels, count) using Cellpose, or (None, None) if unavailable."""
+    if not _CELLPOSE["tried"]:
+        _CELLPOSE["tried"] = True
+        try:
+            import cellpose
+            from cellpose import models
+            major = int(cellpose.version.split(".")[0])
+            _CELLPOSE["major"] = major
+            if major >= 4:                       # Cellpose-SAM, single generalist model
+                _CELLPOSE["model"] = models.CellposeModel(gpu=False)
+            else:                                # v3 and earlier: dedicated nuclei model
+                _CELLPOSE["model"] = models.Cellpose(gpu=False, model_type="nuclei")
+        except Exception as e:
+            print(f"[Cellpose] unavailable ({type(e).__name__}: {e}). "
+                  f"Install with: CellCounter/Scripts/python.exe -m pip install cellpose")
+            _CELLPOSE["model"] = None
+
+    model = _CELLPOSE["model"]
+    if model is None:
+        return None, None
+
+    if _CELLPOSE["major"] >= 4:
+        masks = model.eval(img, normalize=True)[0]
+    else:
+        masks = model.eval(img, diameter=None, channels=[0, 0])[0]
+    return masks, int(masks.max())
+
+
 # ------------------------------- rendering ---------------------------------
 def _draw(ax, vis, labels, title):
     ax.imshow(vis, cmap="gray")
@@ -147,6 +186,7 @@ def run(data_dir, num_samples, out_dir):
         base_labels, base_n = segment_nuclei(img)
         imp_labels, imp_n = segment_improved(img)
         sd_labels, sd_n = segment_stardist(img)
+        cp_labels, cp_n = segment_cellpose(img)
 
         vis = exposure.equalize_adapthist(img, clip_limit=0.03)
 
@@ -157,6 +197,8 @@ def run(data_dir, num_samples, out_dir):
         ]
         if sd_labels is not None:
             panels.append((f"StarDist  (n={sd_n})", sd_labels, sd_n))
+        if cp_labels is not None:
+            panels.append((f"Cellpose  (n={cp_n})", cp_labels, cp_n))
 
         fig, ax = plt.subplots(1, len(panels), figsize=(6 * len(panels), 6))
         ax[0].imshow(vis, cmap="gray")
