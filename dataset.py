@@ -38,7 +38,7 @@ def load_as_float(image_path):
         
     return img.astype(np.float32) / scale_factor
 
-def segment_nuclei(img, max_size=5, min_distance=10, use_watershed=True, method='triangle'):
+def segment_nuclei(img, max_size=10, min_distance=5, use_watershed=True, method='triangle'):
     """Segment Hoechst channel to identify nuclei markers."""
     if img is None or np.max(img) == 0: 
         return None, 0
@@ -370,5 +370,5 @@ def run_qc_segmentation(data_dir="data", qc_dir="QC", num_samples=10):
 
 if __name__ == "__main__":
         
-    run_qc_segmentation(data_dir=r"C:\Users\lab\OneDrive - Vandria\Bureau\Cell counter training dataset\Plate 2 HMC3", num_samples=10)
+    run_qc_segmentation(data_dir=r"C:\Users\lab\OneDrive - Vandria\Bureau\Cell-Counter\IPSC data", num_samples=100)
     

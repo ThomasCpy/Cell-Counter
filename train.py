@@ -38,7 +38,7 @@ def train_pipeline():
     model = UNet(n_channels=1, n_classes=1).to(device)
 
     # Setup DataLoaders
-    data_dir = r"C:\Users\lab\OneDrive - Vandria\Bureau\Cell counter training dataset"
+    data_dir = r"C:\Users\lab\OneDrive - Vandria\Bureau\Cell-Counter\IPSC data"
     os.makedirs(data_dir, exist_ok=True)
 
     # Load and split dataset
@@ -66,7 +66,7 @@ def train_pipeline():
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
     # Initialize TensorBoard writer
-    writer = SummaryWriter('runs/cell_counter_all_run2')
+    writer = SummaryWriter('runs/cell_counter_IPSC')
 
     # Training loop
     
@@ -138,7 +138,7 @@ def train_pipeline():
     writer.close()
     
     # Save PyTorch state dictionary for future training
-    pth_path = "Vandria_cell_counter_model_All.pth"
+    pth_path = "Vandria_cell_counter_model_IPSC.pth"
     # Transfer model to CPU prior to saving to guarantee compatibility
     # across devices without GPU support.
     torch.save(model.to("cpu").state_dict(), pth_path)
@@ -149,7 +149,7 @@ def train_pipeline():
     
     # Trace computational graph
     dummy_input = torch.randn(1, 1, CROP_SIZE[0], CROP_SIZE[1]).to("cpu")
-    onnx_path = "Vandria_cell_counter_model_All.onnx"
+    onnx_path = "Vandria_cell_counter_model_IPSC.onnx"
 
     torch.onnx.export(
         model,
