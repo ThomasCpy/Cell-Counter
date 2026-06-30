@@ -13,8 +13,9 @@ portable to another machine as long as the same folder layout sits under its own
 data_dir.
 
 Usage (GPU box):
-    python generate_labels.py --data "<path to data>" --cache label_cache --gpu
-    python generate_labels.py --data "<path>" --cache label_cache --gpu --qc 20
+    python generate_labels.py --data "<path to data>" --cache label_cache
+    python generate_labels.py --data "<path>" --cache label_cache --qc 20
+GPU is used automatically when available; pass --cpu to force CPU.
 
 Then copy the `label_cache/` folder next to the training code and run train.py.
 """
@@ -38,6 +39,18 @@ def build_cellpose(gpu, model_type):
     import cellpose
     from cellpose import models
     major = int(cellpose.version.split(".")[0])
+
+    # Don't silently fall back to CPU: a GPU labelling run that lands on CPU can
+    # take hours. Verify CUDA is actually available before claiming the GPU.
+    if gpu:
+        try:
+            import torch
+            if not torch.cuda.is_available():
+                print("WARNING: --gpu requested but torch.cuda.is_available() is False. "
+                      "This torch build can't see a GPU (need a CUDA build); running on CPU.")
+                gpu = False
+        except ImportError:
+            pass
 
     if major >= 4:
         # Cellpose-SAM: a single generalist model, diameter-agnostic.
@@ -85,7 +98,7 @@ def main():
     p.add_argument("--data", default=r"C:\Users\lab\OneDrive - Vandria\Bureau\Cell-Counter\IPSC data",
                    help="Root data dir (recursively searched)")
     p.add_argument("--cache", default="label_cache", help="Output dir for cached centroids")
-    p.add_argument("--gpu", action="store_true", help="Run Cellpose on GPU")
+    p.add_argument("--cpu", action="store_true", help="Force CPU (default is GPU when available)")
     p.add_argument("--model", default="nuclei", help="Cellpose v3 model_type (ignored on v4)")
     p.add_argument("--qc", type=int, default=0, help="Save this many QC overlays")
     p.add_argument("--overwrite", action="store_true", help="Re-label images already cached")
@@ -96,7 +109,7 @@ def main():
         print(f"No image pairs found in '{args.data}'.")
         return
 
-    run, info = build_cellpose(args.gpu, args.model)
+    run, info = build_cellpose(gpu=not args.cpu, model_type=args.model)
     print(f"Labelling {len(dataset.pairs)} Hoechst images with {info}")
     os.makedirs(args.cache, exist_ok=True)
 
