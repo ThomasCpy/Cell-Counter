@@ -350,69 +350,85 @@ def run_debug_samples(data_dir="data", debug_dir="debug_samples", num_samples=10
         
     print(f"Saved {num_to_save} debug samples to '{debug_dir}'")
 
-def run_qc_segmentation(data_dir="data", qc_dir="QC", num_samples=10):
-    """Run QC on nuclear segmentation and save side-by-side comparisons."""
+def run_qc_segmentation(data_dir="data", qc_dir="QC", num_samples=10, label_cache="label_cache"):
+    """Visualize the exact training labels: nucleus centroids and Gaussian-blob targets.
+
+    This mirrors what CellDataset feeds the model. With label_cache set (default),
+    centroids come from the precomputed Cellpose cache (run generate_labels.py first);
+    with label_cache=None it falls back to the legacy segment_nuclei() watershed.
+    """
     os.makedirs(qc_dir, exist_ok=True)
-    
+
     # Use the same logic as CellDataset to find pairs
-    dataset = CellDataset(data_dir=data_dir, is_train=False)
-    
+    dataset = CellDataset(data_dir=data_dir, is_train=False, label_cache=label_cache)
+
     if len(dataset.pairs) == 0:
         print(f"No image pairs found in '{data_dir}'.")
         return
-        
+
     samples = dataset.pairs[:num_samples] if num_samples else dataset.pairs
-    
+
+    missing = 0
     for i, pair in enumerate(samples):
         hoechst_path = pair['hoechst']
-        base_name = os.path.basename(hoechst_path)
-        name_no_ext, _ = os.path.splitext(base_name)
-        print(f"Processing QC for {base_name}...")
-        
+        name_no_ext = os.path.splitext(os.path.basename(hoechst_path))[0]
+
         hoechst_img = load_as_float(hoechst_path)
         if hoechst_img is None:
             continue
-            
-        nuclei_labels, num_cells = segment_nuclei(hoechst_img)
-        
+
+        # Centroids come from the same source training will use.
+        if label_cache is not None:
+            centroids = load_cached_centroids(label_cache, data_dir, hoechst_path)
+            if centroids is None:
+                missing += 1
+                continue
+            source = "Cellpose cache"
+        else:
+            nuclei_labels, _ = segment_nuclei(hoechst_img)
+            centroids = np.array([p.centroid for p in regionprops(nuclei_labels)])
+            source = "watershed (legacy)"
+
+        centroids = np.asarray(centroids, dtype=np.float32).reshape(-1, 2)
+        num_cells = len(centroids)
+        print(f"Processing QC for {name_no_ext} ({num_cells} nuclei, {source})...")
+
         # Apply CLAHE for visualization to enhance contrast without altering raw data
         hoechst_vis = exposure.equalize_adapthist(hoechst_img, clip_limit=0.03)
-        
+        heatmap = generate_gaussian_blobs(hoechst_img.shape, centroids, sigma=4.0)
+
         fig, ax = plt.subplots(1, 3, figsize=(18, 6))
-        
+
         ax[0].imshow(hoechst_vis, cmap='gray')
         ax[0].set_title("Hoechst (CLAHE)")
         ax[0].axis('off')
-        
+
+        # Detected nucleus centers — one Gaussian blob will be placed at each.
         ax[1].imshow(hoechst_vis, cmap='gray')
-        
-        # Shuffle labels to assign visually distinct colors to adjacent cells
-        display_labels = nuclei_labels.copy()
-        if num_cells > 0:
-            mapping = np.arange(num_cells + 1)
-            np.random.shuffle(mapping[1:])
-            display_labels = mapping[nuclei_labels]
-            
-        overlay = np.ma.masked_where(nuclei_labels == 0, display_labels)
-        ax[1].imshow(overlay, cmap='hsv', alpha=0.4)
-        ax[1].set_title(f"Watershed Unique Cells (Count: {num_cells})")
+        if num_cells:
+            ax[1].scatter(centroids[:, 1], centroids[:, 0], s=8,
+                          c='cyan', edgecolors='black', linewidths=0.3)
+        ax[1].set_title(f"Nucleus centroids — {source} (n={num_cells})")
         ax[1].axis('off')
-        
-        centroids = [prop.centroid for prop in regionprops(nuclei_labels)]
-        heatmap = generate_gaussian_blobs(hoechst_img.shape, centroids, sigma=4.0)
+
+        # The actual training target the U-Net regresses toward.
         ax[2].imshow(hoechst_vis, cmap='gray')
         ax[2].imshow(heatmap, cmap='magma', alpha=0.5, vmin=0, vmax=1)
-        ax[2].set_title("Gaussian Blobs (Target)")
+        ax[2].set_title("Gaussian Blobs (Training Target)")
         ax[2].axis('off')
-        
+
         plt.tight_layout()
         out_path = os.path.join(qc_dir, f"QC_{name_no_ext}.png")
         plt.savefig(out_path, dpi=150, bbox_inches='tight')
         plt.close(fig)
-        
-    print(f"Saved {len(samples)} QC images to {qc_dir}")
+
+    print(f"Saved {len(samples) - missing} QC images to {qc_dir}")
+    if missing:
+        print(f"Skipped {missing} images with no cached labels — "
+              f"run generate_labels.py (cache dir: '{label_cache}') to build them.")
 
 if __name__ == "__main__":
-        
-    run_qc_segmentation(data_dir=r"C:\Users\lab\OneDrive - Vandria\Bureau\Cell-Counter\IPSC data", num_samples=100)
-    
+
+    run_qc_segmentation(data_dir=r"C:\Users\lab\OneDrive - Vandria\Bureau\Cell-Counter\IPSC data",
+                        num_samples=100, label_cache="label_cache")
+

@@ -82,7 +82,8 @@ def save_qc_overlay(qc_dir, name, img, centroids):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--data", required=True, help="Root data dir (recursively searched)")
+    p.add_argument("--data", default=r"C:\Users\lab\OneDrive - Vandria\Bureau\Cell-Counter\IPSC data",
+                   help="Root data dir (recursively searched)")
     p.add_argument("--cache", default="label_cache", help="Output dir for cached centroids")
     p.add_argument("--gpu", action="store_true", help="Run Cellpose on GPU")
     p.add_argument("--model", default="nuclei", help="Cellpose v3 model_type (ignored on v4)")
