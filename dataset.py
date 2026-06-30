@@ -350,12 +350,16 @@ def run_debug_samples(data_dir="data", debug_dir="debug_samples", num_samples=10
         
     print(f"Saved {num_to_save} debug samples to '{debug_dir}'")
 
-def run_qc_segmentation(data_dir="data", qc_dir="QC", num_samples=10, label_cache="label_cache"):
+def run_qc_segmentation(data_dir="data", qc_dir="QC", num_samples=None, frac=0.1,
+                        seed=0, label_cache="label_cache"):
     """Visualize the exact training labels: nucleus centroids and Gaussian-blob targets.
 
     This mirrors what CellDataset feeds the model. With label_cache set (default),
     centroids come from the precomputed Cellpose cache (run generate_labels.py first);
     with label_cache=None it falls back to the legacy segment_nuclei() watershed.
+
+    By default it renders a random `frac` (10%) of the dataset. Pass an int
+    num_samples to render that many randomly sampled images instead.
     """
     os.makedirs(qc_dir, exist_ok=True)
 
@@ -366,7 +370,9 @@ def run_qc_segmentation(data_dir="data", qc_dir="QC", num_samples=10, label_cach
         print(f"No image pairs found in '{data_dir}'.")
         return
 
-    samples = dataset.pairs[:num_samples] if num_samples else dataset.pairs
+    n = num_samples if num_samples is not None else round(frac * len(dataset.pairs))
+    n = max(1, min(n, len(dataset.pairs)))
+    samples = random.Random(seed).sample(dataset.pairs, n)
 
     missing = 0
     for i, pair in enumerate(samples):
@@ -393,8 +399,11 @@ def run_qc_segmentation(data_dir="data", qc_dir="QC", num_samples=10, label_cach
         num_cells = len(centroids)
         print(f"Processing QC for {name_no_ext} ({num_cells} nuclei, {source})...")
 
-        # Apply CLAHE for visualization to enhance contrast without altering raw data
-        hoechst_vis = exposure.equalize_adapthist(hoechst_img, clip_limit=0.03)
+        # Normalize to [0,1] from the image's own min/max (robust to bit depth /
+        # float inputs) before CLAHE, which requires values in range.
+        hoechst_norm = exposure.rescale_intensity(hoechst_img.astype(np.float32),
+                                                  in_range="image", out_range=(0.0, 1.0))
+        hoechst_vis = exposure.equalize_adapthist(hoechst_norm, clip_limit=0.03)
         heatmap = generate_gaussian_blobs(hoechst_img.shape, centroids, sigma=4.0)
 
         fig, ax = plt.subplots(1, 3, figsize=(18, 6))
@@ -430,5 +439,5 @@ def run_qc_segmentation(data_dir="data", qc_dir="QC", num_samples=10, label_cach
 if __name__ == "__main__":
 
     run_qc_segmentation(data_dir=r"C:\Users\lab\OneDrive - Vandria\Bureau\Cell-Counter\IPSC data",
-                        num_samples=100, label_cache="label_cache")
+                        frac=0.1, label_cache="label_cache")
 

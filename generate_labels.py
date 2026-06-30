@@ -21,14 +21,15 @@ Then copy the `label_cache/` folder next to the training code and run train.py.
 """
 import os
 import json
+import random
 import argparse
 import numpy as np
 from tqdm import tqdm
 from skimage.measure import regionprops
 
 from dataset import (
-    CellDataset, load_as_float, save_cached_centroids, label_cache_key,
-    generate_gaussian_blobs,
+    CellDataset, load_as_float, save_cached_centroids, load_cached_centroids,
+    label_cache_key, generate_gaussian_blobs,
 )
 
 # Heatmap sigma is owned by dataset.py; we only cache centroids here.
@@ -74,7 +75,11 @@ def save_qc_overlay(qc_dir, name, img, centroids):
     from skimage import exposure
 
     os.makedirs(qc_dir, exist_ok=True)
-    vis = exposure.equalize_adapthist(img, clip_limit=0.03)
+    # Normalize to [0,1] from the image's own min/max so CLAHE never sees
+    # out-of-range floats, regardless of bit depth or input dtype.
+    img_norm = exposure.rescale_intensity(img.astype(np.float32), in_range="image",
+                                          out_range=(0.0, 1.0))
+    vis = exposure.equalize_adapthist(img_norm, clip_limit=0.03)
     heat = generate_gaussian_blobs(img.shape, centroids, sigma=4.0)
 
     fig, ax = plt.subplots(1, 2, figsize=(12, 6))
@@ -100,7 +105,11 @@ def main():
     p.add_argument("--cache", default="label_cache", help="Output dir for cached centroids")
     p.add_argument("--cpu", action="store_true", help="Force CPU (default is GPU when available)")
     p.add_argument("--model", default="nuclei", help="Cellpose v3 model_type (ignored on v4)")
-    p.add_argument("--qc", type=int, default=0, help="Save this many QC overlays")
+    p.add_argument("--qc-frac", type=float, default=0.1,
+                   help="Fraction of images to save QC overlays for (default 0.1 = 10%%)")
+    p.add_argument("--qc", type=int, default=None,
+                   help="Absolute number of QC overlays (overrides --qc-frac; 0 disables)")
+    p.add_argument("--seed", type=int, default=0, help="Seed for the random QC sample")
     p.add_argument("--overwrite", action="store_true", help="Re-label images already cached")
     args = p.parse_args()
 
@@ -113,16 +122,30 @@ def main():
     print(f"Labelling {len(dataset.pairs)} Hoechst images with {info}")
     os.makedirs(args.cache, exist_ok=True)
 
+    # Randomly choose which images get a QC overlay (default 10% of the dataset).
+    n_qc = args.qc if args.qc is not None else round(args.qc_frac * len(dataset.pairs))
+    n_qc = max(0, min(n_qc, len(dataset.pairs)))
+    qc_indices = set(random.Random(args.seed).sample(range(len(dataset.pairs)), n_qc))
+    qc_dir = os.path.join(args.cache, "QC")
+    print(f"Saving QC overlays for {n_qc} randomly sampled images.")
+
     manifest = {}
-    qc_left = args.qc
     skipped = 0
-    for pair in tqdm(dataset.pairs, desc="Cellpose labelling"):
+    for i, pair in enumerate(tqdm(dataset.pairs, desc="Cellpose labelling")):
         hoechst_path = pair["hoechst"]
         key = label_cache_key(args.data, hoechst_path)
         out_fp = os.path.join(args.cache, key + ".npy")
+        name = os.path.splitext(os.path.basename(hoechst_path))[0]
+        want_qc = i in qc_indices
 
         if os.path.exists(out_fp) and not args.overwrite:
             skipped += 1
+            # Still render QC from the cached centroids if this image was sampled.
+            if want_qc:
+                img = load_as_float(hoechst_path)
+                cached = load_cached_centroids(args.cache, args.data, hoechst_path)
+                if img is not None and cached is not None:
+                    save_qc_overlay(qc_dir, name, img, cached)
             continue
 
         img = load_as_float(hoechst_path)
@@ -139,10 +162,8 @@ def main():
             "count": int(len(centroids)),
         }
 
-        if qc_left > 0 and img is not None:
-            save_qc_overlay(os.path.join(args.cache, "QC"),
-                            os.path.splitext(os.path.basename(hoechst_path))[0], img, centroids)
-            qc_left -= 1
+        if want_qc and img is not None:
+            save_qc_overlay(qc_dir, name, img, centroids)
 
     # Merge manifest with any prior run so it stays complete across incremental runs.
     manifest_fp = os.path.join(args.cache, "manifest.json")
