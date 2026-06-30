@@ -33,6 +33,7 @@ def train_pipeline():
     LEARNING_RATE = 1e-4
     EPOCHS = 50
     NUM_WORKERS = 8
+    CROPS_PER_IMAGE = 8   # random crops drawn per training image each epoch
 
     # Initialize model
     model = UNet(n_channels=1, n_classes=1).to(device)
@@ -57,7 +58,7 @@ def train_pipeline():
     train_size = int(0.8 * len(full_dataset.pairs))
 
     train_dataset = CellDataset(data_dir=data_dir, is_train=True, crop_size=CROP_SIZE,
-                                label_cache=LABEL_CACHE)
+                                label_cache=LABEL_CACHE, crops_per_image=CROPS_PER_IMAGE)
     train_dataset.pairs = full_dataset.pairs[:train_size]
 
     val_dataset = CellDataset(data_dir=data_dir, is_train=False, crop_size=CROP_SIZE,

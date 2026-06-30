@@ -170,7 +170,7 @@ def label_cells_from_mask(mask, min_distance=15, max_size=50):
 
 class CellDataset(Dataset):
     def __init__(self, data_dir, is_train=True, crop_size=(256, 256), preload=False,
-                 label_cache=None):
+                 label_cache=None, crops_per_image=1):
         self.data_dir = data_dir
         self.is_train = is_train
         self.crop_size = crop_size
@@ -179,6 +179,10 @@ class CellDataset(Dataset):
         # (see generate_labels.py) instead of the on-the-fly triangle+watershed
         # segmentation. None falls back to the legacy segment_nuclei() path.
         self.label_cache = label_cache
+        # Draw this many independent random crops from each image per epoch to
+        # enlarge a small dataset. Only applied in training; validation uses one
+        # deterministic center crop per image so the metric stays comparable.
+        self.crops_per_image = max(1, crops_per_image) if is_train else 1
         
         search_pattern = os.path.join(data_dir, "**", "*.[tT][iI][fF]*")
         all_files = glob.glob(search_pattern, recursive=True)
@@ -267,13 +271,16 @@ class CellDataset(Dataset):
         return bf_img, target_heatmap
 
     def __len__(self):
-        return len(self.pairs)
+        return len(self.pairs) * self.crops_per_image
 
     def __getitem__(self, idx):
-        if self.preload and idx in self.cache:
-            bf_img, target_mask = self.cache[idx]
+        # Multiple virtual indices map to the same image; the random crop/flip
+        # below makes each draw a different training sample.
+        pair_idx = idx % len(self.pairs)
+        if self.preload and pair_idx in self.cache:
+            bf_img, target_mask = self.cache[pair_idx]
         else:
-            bf_img, target_mask = self._process_image_pair(idx)
+            bf_img, target_mask = self._process_image_pair(pair_idx)
 
         # Convert to tensors
         bf_tensor = torch.from_numpy(bf_img).unsqueeze(0)
