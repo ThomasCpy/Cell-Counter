@@ -182,11 +182,14 @@ class CellDataset(Dataset):
         
         search_pattern = os.path.join(data_dir, "**", "*.[tT][iI][fF]*")
         all_files = glob.glob(search_pattern, recursive=True)
-        
-        # Parse filenames
-        pattern = re.compile(r'^(.*_([A-H]\d{2})f(\d{2})d)(\d)(.*)$')
-        
+
+        # Parse filenames, e.g. localhost..._C04f25d0.TIFF
+        #   well = [A-P]\d{2} (C04), field = f\d+ (variable width: f0, f25, f100),
+        #   channel = d\d (d0 = Hoechst, d1 = brightfield).
+        pattern = re.compile(r'^(.*_([A-P]\d{2})f(\d+)d)(\d)(.*)$')
+
         pairs_dict = {}
+        unmatched = 0
         for f in all_files:
             dirname = os.path.dirname(f)
             basename = os.path.basename(f)
@@ -195,23 +198,32 @@ class CellDataset(Dataset):
                 base_prefix = match.group(1)
                 channel = match.group(4)
                 suffix = match.group(5)
-                
+
                 key = os.path.join(dirname, base_prefix + suffix)
                 if key not in pairs_dict:
                     pairs_dict[key] = {}
                 pairs_dict[key][channel] = f
-                
+            else:
+                unmatched += 1
+
         self.pairs = []
+        incomplete = 0
         for key, channels in pairs_dict.items():
             if '0' in channels and '1' in channels:
                 self.pairs.append({
                     'hoechst': channels['0'],
                     'bf': channels['1']
                 })
-                
+            else:
+                incomplete += 1
+
         # Sort pairs deterministically
         self.pairs = sorted(self.pairs, key=lambda x: x['bf'])
-        
+
+        # Surface discovery problems instead of silently training on a fraction.
+        print(f"[CellDataset] {data_dir}: {len(all_files)} TIFs -> {len(self.pairs)} pairs "
+              f"({unmatched} unmatched names, {incomplete} singletons missing d0/d1).")
+
 
         self.cache = {}
         if self.preload:
