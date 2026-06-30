@@ -41,9 +41,14 @@ def train_pipeline():
     data_dir = r"C:\Users\lab\OneDrive - Vandria\Bureau\Cell-Counter\IPSC data"
     os.makedirs(data_dir, exist_ok=True)
 
+    # Precomputed Cellpose nucleus labels (build with generate_labels.py). Set to
+    # None to fall back to the legacy on-the-fly triangle+watershed segmentation.
+    LABEL_CACHE = "label_cache"
+
     # Load and split dataset
-    full_dataset = CellDataset(data_dir=data_dir, is_train=False, crop_size=CROP_SIZE)
-    
+    full_dataset = CellDataset(data_dir=data_dir, is_train=False, crop_size=CROP_SIZE,
+                               label_cache=LABEL_CACHE)
+
     if len(full_dataset) == 0:
         print(f"Data directory is empty. Please place matched pairs in '{data_dir}'.")
         return
@@ -51,10 +56,12 @@ def train_pipeline():
     random.shuffle(full_dataset.pairs)
     train_size = int(0.8 * len(full_dataset.pairs))
 
-    train_dataset = CellDataset(data_dir=data_dir, is_train=True, crop_size=CROP_SIZE)
+    train_dataset = CellDataset(data_dir=data_dir, is_train=True, crop_size=CROP_SIZE,
+                                label_cache=LABEL_CACHE)
     train_dataset.pairs = full_dataset.pairs[:train_size]
 
-    val_dataset = CellDataset(data_dir=data_dir, is_train=False, crop_size=CROP_SIZE)
+    val_dataset = CellDataset(data_dir=data_dir, is_train=False, crop_size=CROP_SIZE,
+                              label_cache=LABEL_CACHE)
     val_dataset.pairs = full_dataset.pairs[train_size:]
 
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=NUM_WORKERS)

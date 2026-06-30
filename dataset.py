@@ -2,6 +2,7 @@ import os
 import glob
 import re
 import random
+import hashlib
 import torch
 import numpy as np
 from torch.utils.data import Dataset
@@ -122,6 +123,32 @@ def generate_gaussian_blobs(shape, centroids, sigma=4.0):
         
     return heatmap
 
+def label_cache_key(data_dir, image_path):
+    """Portable cache key for a labelled image.
+
+    Uses the path *relative* to data_dir so labels generated on the GPU box match
+    when training on a different machine (absolute paths/drives differ; the copied
+    folder layout under data_dir does not).
+    """
+    rel = os.path.relpath(image_path, data_dir).replace("\\", "/")
+    return hashlib.md5(rel.encode("utf-8")).hexdigest()
+
+
+def save_cached_centroids(cache_dir, data_dir, image_path, centroids):
+    """Persist nucleus centroids (N, 2) as (y, x) for one Hoechst image."""
+    os.makedirs(cache_dir, exist_ok=True)
+    arr = np.asarray(centroids, dtype=np.float32).reshape(-1, 2)
+    np.save(os.path.join(cache_dir, label_cache_key(data_dir, image_path) + ".npy"), arr)
+
+
+def load_cached_centroids(cache_dir, data_dir, image_path):
+    """Load cached centroids (N, 2) as (y, x), or None if not generated yet."""
+    fp = os.path.join(cache_dir, label_cache_key(data_dir, image_path) + ".npy")
+    if os.path.exists(fp):
+        return np.load(fp)
+    return None
+
+
 def label_cells_from_mask(mask, min_distance=15, max_size=50):
     """Segment cells in a binary mask using watershed and return labels and count."""
     mask_cleaned = morphology.remove_small_objects(mask.astype(bool), max_size=max_size)
@@ -142,11 +169,16 @@ def label_cells_from_mask(mask, min_distance=15, max_size=50):
     return nuclei_labels, np.max(nuclei_labels)
 
 class CellDataset(Dataset):
-    def __init__(self, data_dir, is_train=True, crop_size=(256, 256), preload=False):
+    def __init__(self, data_dir, is_train=True, crop_size=(256, 256), preload=False,
+                 label_cache=None):
         self.data_dir = data_dir
         self.is_train = is_train
         self.crop_size = crop_size
         self.preload = preload
+        # When set, target heatmaps are built from precomputed Cellpose centroids
+        # (see generate_labels.py) instead of the on-the-fly triangle+watershed
+        # segmentation. None falls back to the legacy segment_nuclei() path.
+        self.label_cache = label_cache
         
         search_pattern = os.path.join(data_dir, "**", "*.[tT][iI][fF]*")
         all_files = glob.glob(search_pattern, recursive=True)
@@ -191,23 +223,35 @@ class CellDataset(Dataset):
         bf_path = self.pairs[idx]['bf']
         hoechst_path = self.pairs[idx]['hoechst']
 
-        # Load images
+        # Load brightfield (the model input)
         bf_img = load_as_float(bf_path)
-        hoechst_img = load_as_float(hoechst_path)
 
         # Pseudo-flatfield correction (Background Subtraction)
         bg = filters.gaussian(bf_img, sigma=50.0)
         bf_img = bf_img - bg
-        
+
         # Safe Per-Image Standardization (Z-score)
         std = np.std(bf_img)
         bf_img = (bf_img - np.mean(bf_img)) / max(std, 1e-2)
 
-        # Generate target Gaussian heatmaps based on watershed centroids
-        nuclei_labels, _ = segment_nuclei(hoechst_img)
-        centroids = [prop.centroid for prop in regionprops(nuclei_labels)]
-        target_heatmap = generate_gaussian_blobs(hoechst_img.shape, centroids, sigma=4.0)
-        
+        # Target centroids: precomputed Cellpose labels if available, else the
+        # legacy on-the-fly Hoechst segmentation.
+        if self.label_cache is not None:
+            centroids = load_cached_centroids(self.label_cache, self.data_dir, hoechst_path)
+            if centroids is None:
+                raise FileNotFoundError(
+                    f"No cached labels for {hoechst_path} in '{self.label_cache}'. "
+                    f"Run generate_labels.py to build the Cellpose label cache first.")
+            # bf and hoechst are a registered pair, so they share spatial dims.
+            shape = bf_img.shape
+        else:
+            hoechst_img = load_as_float(hoechst_path)
+            nuclei_labels, _ = segment_nuclei(hoechst_img)
+            centroids = [prop.centroid for prop in regionprops(nuclei_labels)]
+            shape = hoechst_img.shape
+
+        target_heatmap = generate_gaussian_blobs(shape, centroids, sigma=4.0)
+
         return bf_img, target_heatmap
 
     def __len__(self):
