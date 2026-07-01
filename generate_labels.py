@@ -106,7 +106,7 @@ def main():
     p.add_argument("--cpu", action="store_true", help="Force CPU (default is GPU when available)")
     p.add_argument("--model", default="nuclei", help="Cellpose v3 model_type (ignored on v4)")
     p.add_argument("--qc-frac", type=float, default=0.1,
-                   help="Fraction of images to save QC overlays for (default 0.1 = 10%%)")
+                   help="Fraction of images to save QC overlays for (default 0.1 = 10 percent)")
     p.add_argument("--qc", type=int, default=None,
                    help="Absolute number of QC overlays (overrides --qc-frac; 0 disables)")
     p.add_argument("--seed", type=int, default=0, help="Seed for the random QC sample")

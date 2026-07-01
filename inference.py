@@ -360,7 +360,7 @@ def _parse_brightfield(file_path):
     if not match:
         return None
     time_str, well, field, channel = match.groups()
-    if channel != '1':
+    if channel != '0':
         return None
     return well, field, int(time_str) if time_str else 0
 
@@ -766,11 +766,11 @@ def run_batch_inference(onnx_path, input_dir, threshold=0.5, output_dir="results
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Run cell counter inference")
-    parser.add_argument("--model", type=str, default="Vandria_cell_counter_model_All.onnx", help="Path to ONNX model")
-    parser.add_argument("--input", type=str, default="./IPSC data", help="Path to image file or directory")
+    parser.add_argument("--model", type=str, default="Vandria_cell_counter_model_IPSC.pth", help="Path to ONNX model")
+    parser.add_argument("--input", type=str, default="./ACA16 data", help="Path to image file or directory")
     parser.add_argument("--dtt", type=str, default="./Tecan files/2026-06-02_VNA _p3_RHO182.tdd", help="Path to Tecan D300e .dtt file")
-    parser.add_argument("--threshold", type=float, default=0.5, help="Detection threshold")
-    parser.add_argument("--output", type=str, default="Results/IPSC test", help="Output directory")
+    parser.add_argument("--threshold", type=float, default=0.2, help="Detection threshold")
+    parser.add_argument("--output", type=str, default="Results/ACA16", help="Output directory")
     parser.add_argument("--save-qc", default=False, action="store_true", help="onnx/CPU path only: save a QC overlay for every field")
     parser.add_argument("--qc-per-well", type=int, default=10, help="GPU/torch path: number of randomly sampled fields per well to save QC overlays for (0 disables)")
     parser.add_argument("--batch-size", type=int, default=4, help="GPU/torch path: images per forward pass")
